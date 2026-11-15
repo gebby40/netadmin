@@ -182,9 +182,14 @@ def test_discovery_scan_review_and_add():
         # ignoring hides a result from the count without deleting it
         assert c.post(f"/api/discovery/hosts/{hosts['192.168.50.2']['id']}/ignore", json={"ignored": True}).status_code == 200
         assert c.get("/api/overview").json()["new_found"] == 0
+        # a silent device on the local network is still listed, from the neighbour table
+        discovery.start_scan(probe_fn=fake_probe, neighbours_fn=lambda: {"192.168.50.5": "58:47:ca:75:ad:bf", "10.9.9.9": "aa:aa:aa:aa:aa:aa"}, wait=True)
+        hosts = {h["ip"]: h for h in c.get("/api/discovery").json()["hosts"]}
+        assert hosts["192.168.50.5"]["ports"] == [] and "10.9.9.9" not in hosts
+        c.post(f"/api/discovery/hosts/{hosts['192.168.50.5']['id']}/ignore", json={"ignored": True})
         # a second scan updates rather than duplicates
         discovery.start_scan(probe_fn=fake_probe, neighbours_fn=lambda: {}, wait=True)
         again = c.get("/api/discovery").json()["hosts"]
-        assert len(again) == 2 and {h["ip"]: h for h in again}["192.168.50.1"]["mac"] == "48:a9:8a:29:e7:5c"
+        assert len(again) == 3 and {h["ip"]: h for h in again}["192.168.50.1"]["mac"] == "48:a9:8a:29:e7:5c"
     finally:
         c.__exit__(None, None, None)

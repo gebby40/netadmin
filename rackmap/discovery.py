@@ -177,6 +177,8 @@ def web_page(ip: str, secure: bool, port: int) -> tuple[str, str]:
         return "", ""
     match = re.search(r"<title[^>]*>(.*?)</title>", body, re.IGNORECASE | re.DOTALL)
     title = re.sub(r"\s+", " ", match.group(1)).strip()[:160] if match else ""
+    if 300 <= response.status < 400 or re.match(r"^30\d\b", title):
+        title = ""  # a redirect page says nothing about the device; the caller tries the next port
     return title, server
 
 
@@ -190,8 +192,10 @@ def probe(ip: str, community: str) -> dict | None:
     host = {"ip": ip, "ports": sorted(ports), "hostname": reverse_name(ip), "sys_name": "", "sys_descr": "", "http_title": "", "http_server": ""}
     for port, secure in ((80, False), (443, True), (8080, False), (8443, True)):
         if port in ports:
-            host["http_title"], host["http_server"] = web_page(ip, secure, port)
-            if host["http_title"] or host["http_server"]:
+            title, server = web_page(ip, secure, port)
+            host["http_server"] = host["http_server"] or server
+            if title:
+                host["http_title"] = title
                 break
     if community:
         try:
@@ -260,7 +264,7 @@ def looks_like(host: dict) -> str:
         return "Device with a web page"
     if 22 in ports:
         return "Linux or network device"
-    return "Answers, but offers no common services"
+    return "Answers, but offers no common services (often a computer with its firewall on)"
 
 
 # ---------- running a scan ----------
@@ -306,6 +310,13 @@ def _run(addresses: list[str], settings: dict, probe_fn, neighbours_fn) -> None:
             list(pool.map(one, addresses))
 
         macs = dict(neighbours_fn())
+        # A device that ignores pings and offers no services still answers at the hardware level
+        # when it is on rackmap's own network, so it shows up in the neighbour table.
+        answered = {h["ip"] for h in hosts}
+        for ip in set(addresses) & set(macs) - answered:
+            hosts.append({"ip": ip, "ports": [], "hostname": reverse_name(ip), "sys_name": "", "sys_descr": "", "http_title": "", "http_server": ""})
+            with _lock:
+                _job["found"] += 1
         if settings["router"]:
             if not settings["community"]:
                 notes.append("The router wasn't asked for hardware addresses because no SNMP community is set.")
