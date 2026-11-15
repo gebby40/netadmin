@@ -50,28 +50,149 @@
 
   <template id="t-home">
     <section class="home">
-      <h1>Your network</h1>
-      <div class="grid">
-        <article class="card">
-          <h2>Racks</h2>
-          <p class="count" id="n-racks">0</p>
-          <p class="hint">No racks yet. The rack view arrives in the next version.</p>
-        </article>
-        <article class="card">
-          <h2>Equipment</h2>
-          <p class="count" id="n-devices">0</p>
-          <p class="hint">Nothing recorded yet. Discovery will find equipment and ask where it sits.</p>
-        </article>
-        <article class="card">
-          <h2>Consoles</h2>
-          <p class="count" id="n-consoles">0</p>
-          <p class="hint">No console server connected yet.</p>
-        </article>
+      <div class="toolbar">
+        <div class="tabs" id="rack-tabs" role="tablist" aria-label="Racks"></div>
+        <div class="actions">
+          <button type="button" class="secondary" id="add-rack">Add rack</button>
+          <button type="button" class="primary" id="add-device">Add equipment</button>
+        </div>
       </div>
-      <p class="foot">rackmap <span id="version"></span></p>
+
+      <div class="empty card" id="no-racks" hidden>
+        <h1>No racks yet</h1>
+        <p class="hint">Add your first rack, then place equipment in it. Equipment that doesn't live in a rack can be recorded too.</p>
+        <button type="button" class="primary" id="add-first-rack">Add a rack</button>
+      </div>
+
+      <div class="workspace" id="workspace" hidden>
+        <div class="rack-col">
+          <div class="rack-head">
+            <div>
+              <h1 id="rack-name"></h1>
+              <p class="hint" id="rack-sub"></p>
+            </div>
+            <div class="rack-tools">
+              <div class="seg" role="group" aria-label="Side of the rack shown">
+                <button type="button" id="face-front" aria-pressed="true">Front</button>
+                <button type="button" id="face-rear" aria-pressed="false">Rear</button>
+              </div>
+              <button type="button" class="link" id="edit-rack">Edit rack</button>
+            </div>
+          </div>
+          <div class="rack-wrap">
+            <div class="rack" id="rack">
+              <ol class="units" id="units" aria-hidden="true"></ol>
+              <div class="bay" id="bay"></div>
+              <ol class="labels" id="labels"></ol>
+            </div>
+          </div>
+        </div>
+
+        <aside class="side">
+          <section class="card" id="detail" hidden></section>
+          <section class="card" id="unplaced">
+            <h2>Not in a rack</h2>
+            <ul class="plain" id="unplaced-list"></ul>
+            <p class="hint" id="unplaced-none">Everything recorded is in a rack.</p>
+          </section>
+        </aside>
+      </div>
+      <p class="foot">rackmap <span id="version"></span> · equipment database from the NetBox community device-type library (CC0)</p>
     </section>
   </template>
 
+  <dialog id="rack-dialog">
+    <form method="dialog" id="rack-form" novalidate>
+      <h1 id="rack-dialog-title">Add rack</h1>
+      <label>Name<input name="name" maxlength="80" required placeholder="Garage rack"></label>
+      <label>Height in rack units (U)<input name="height_u" type="number" min="1" max="60" step="1" required value="42" inputmode="numeric"></label>
+      <label>Notes<textarea name="notes" maxlength="2000" rows="2"></textarea></label>
+      <p class="error" id="rack-error" role="alert" hidden></p>
+      <div class="buttons">
+        <button type="button" class="danger" id="rack-delete" hidden>Delete rack</button>
+        <span class="spacer"></span>
+        <button type="button" class="secondary" data-close>Cancel</button>
+        <button type="submit" class="primary" id="rack-save">Save rack</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="device-dialog">
+    <form method="dialog" id="device-form" novalidate>
+      <h1 id="device-dialog-title">Add equipment</h1>
+
+      <fieldset id="model-picker">
+        <legend>Model</legend>
+        <div id="model-search">
+          <label>Search the equipment database<input id="model-q" type="search" placeholder="e.g. CRS328, PowerEdge R720, UniFi 24" autocomplete="off"></label>
+          <ul class="results" id="model-results"></ul>
+          <button type="button" class="link" id="model-manual">It isn't listed — enter it by hand</button>
+        </div>
+        <div id="model-chosen" hidden>
+          <p class="chosen"><strong id="chosen-name"></strong> <span class="hint" id="chosen-meta"></span></p>
+          <button type="button" class="link" id="model-change">Choose a different model</button>
+        </div>
+        <div id="model-custom" hidden>
+          <div class="row">
+            <label>Maker<input name="manufacturer" maxlength="120"></label>
+            <label>Model<input name="model" maxlength="160"></label>
+          </div>
+          <div class="row">
+            <label>Height (U)<input name="u_height" type="number" min="0" max="60" step="0.5" value="1" inputmode="decimal"></label>
+            <label>Depth<select name="full_depth"><option value="true">Full depth</option><option value="false">Half depth</option></select></label>
+          </div>
+          <p class="hint">Use height 0 for equipment that doesn't mount in a rack.</p>
+          <button type="button" class="link" id="model-back">Search the database instead</button>
+        </div>
+      </fieldset>
+
+      <label>Name<input name="name" maxlength="120" placeholder="What you call it"></label>
+
+      <fieldset>
+        <legend>Where it sits</legend>
+        <div class="row">
+          <label>Rack<select name="rack_id" id="f-rack"></select></label>
+          <label>Side<select name="face" id="f-face"><option value="front">Front</option><option value="rear">Rear</option></select></label>
+        </div>
+        <label id="f-pos-label">Position (lowest U it occupies)<select name="position_u" id="f-pos"></select></label>
+        <p class="hint" id="f-pos-hint" hidden></p>
+      </fieldset>
+
+      <details id="more">
+        <summary>Addresses and notes</summary>
+        <div class="row">
+          <label>IP address<input name="ip" maxlength="64" inputmode="url" autocomplete="off"></label>
+          <label>MAC address<input name="mac" maxlength="32" autocomplete="off"></label>
+        </div>
+        <div class="row">
+          <label>Serial number<input name="serial" maxlength="80" autocomplete="off"></label>
+          <label>Admin page<input name="admin_url" maxlength="300" placeholder="https://…" inputmode="url" autocomplete="off"></label>
+        </div>
+        <label>Notes<textarea name="notes" maxlength="4000" rows="3"></textarea></label>
+      </details>
+
+      <p class="error" id="device-error" role="alert" hidden></p>
+      <div class="buttons">
+        <span class="spacer"></span>
+        <button type="button" class="secondary" data-close>Cancel</button>
+        <button type="submit" class="primary" id="device-save">Add equipment</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="confirm-dialog">
+    <form method="dialog">
+      <h1 id="confirm-title"></h1>
+      <p id="confirm-text"></p>
+      <div class="buttons">
+        <span class="spacer"></span>
+        <button type="button" class="secondary" data-close>Cancel</button>
+        <button type="submit" class="danger" id="confirm-ok" value="ok"></button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="/static/faceplate.js" defer></script>
   <script src="/static/app.js" defer></script>
 </body>
 </html>

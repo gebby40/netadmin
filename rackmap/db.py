@@ -29,6 +29,52 @@ MIGRATIONS: list[str] = [
         value TEXT NOT NULL
     );
     """,
+    """
+    -- Equipment catalogue (loaded from the bundled file; safe to rebuild at any time)
+    CREATE TABLE device_types (
+        slug TEXT PRIMARY KEY,
+        manufacturer TEXT NOT NULL,
+        model TEXT NOT NULL,
+        part_number TEXT,
+        u_height REAL NOT NULL,
+        full_depth INTEGER NOT NULL,
+        front_image TEXT,
+        rear_image TEXT,
+        ports TEXT NOT NULL,
+        search TEXT NOT NULL
+    );
+    CREATE INDEX device_types_maker ON device_types (manufacturer, model);
+
+    CREATE TABLE racks (
+        id INTEGER PRIMARY KEY,
+        name TEXT NOT NULL,
+        height_u INTEGER NOT NULL,
+        notes TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    -- A device keeps its own copy of maker/model/height so it survives catalogue changes
+    -- and so equipment that is not in the catalogue can be recorded.
+    CREATE TABLE devices (
+        id INTEGER PRIMARY KEY,
+        name TEXT NOT NULL,
+        type_slug TEXT,
+        manufacturer TEXT NOT NULL DEFAULT '',
+        model TEXT NOT NULL DEFAULT '',
+        u_height REAL NOT NULL DEFAULT 1,
+        full_depth INTEGER NOT NULL DEFAULT 1,
+        rack_id INTEGER REFERENCES racks(id) ON DELETE SET NULL,
+        position_u REAL,
+        face TEXT NOT NULL DEFAULT 'front',
+        ip TEXT NOT NULL DEFAULT '',
+        mac TEXT NOT NULL DEFAULT '',
+        serial TEXT NOT NULL DEFAULT '',
+        admin_url TEXT NOT NULL DEFAULT '',
+        notes TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX devices_rack ON devices (rack_id);
+    """,
 ]
 
 _lock = threading.Lock()
@@ -74,6 +120,30 @@ def execute(sql: str, params: tuple = ()) -> int:
     """Run a write; returns the last inserted row id."""
     with _lock_for(connect()):
         return connect().execute(sql, params).lastrowid or 0
+
+
+def execute_many(sql: str, rows: list[tuple], before: str | None = None) -> None:
+    """Run one statement for many rows in a single transaction (optionally after `before`)."""
+    with _lock_for(connect()):
+        conn = connect()
+        conn.execute("BEGIN")
+        try:
+            if before:
+                conn.execute(before)
+            conn.executemany(sql, rows)
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+
+
+def get_setting(key: str) -> str | None:
+    rows = query("SELECT value FROM settings WHERE key = ?", (key,))
+    return rows[0]["value"] if rows else None
+
+
+def set_setting(key: str, value: str) -> None:
+    execute("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", (key, value))
 
 
 _write_lock = threading.Lock()
