@@ -435,7 +435,8 @@ function renderDetail() {
     device.has_controller ? h("section", { class: "controller", id: "controller-panel" }, h("h2", { text: "Management controller" }), h("p", { class: "hint", text: "Asking the controller…" })) : "",
     h("div", { class: "buttons" },
       h("button", { type: "button", class: "secondary", onclick: () => openDeviceDialog(device) }, "Edit"),
-      device.has_controller ? null : h("button", { type: "button", class: "secondary", onclick: () => openControllerDialog(device, null) }, "Connect controller"),
+      h("button", { type: "button", class: "secondary", onclick: () => openLinkDialog(device) }, "Connect console port"),
+      device.has_controller ? null : h("button", { type: "button", class: "secondary", onclick: () => openControllerDialog(device, null) }, "Connect server controller"),
       placed ? h("button", { type: "button", class: "secondary", onclick: () => takeOut(device) }, "Take out of rack") : null,
       h("span", { class: "spacer" }),
       h("button", { type: "button", class: "danger", onclick: () => removeDevice(device) }, "Delete")));
@@ -1073,6 +1074,44 @@ $("port-form").addEventListener("submit", async (event) => {
     setError("port-error", err.message);
   } finally {
     $("port-save").disabled = false;
+  }
+});
+
+/* tie a console-server port to a piece of equipment, starting from the equipment */
+let linkingDevice = null;
+let linkPorts = [];
+
+async function openLinkDialog(device) {
+  let servers;
+  try { servers = (await api("/api/consoles")).servers; } catch (err) { return failed(err); }
+  linkingDevice = device;
+  // ports already tied to other equipment are left out; change those under Consoles
+  linkPorts = servers.flatMap((server) => server.ports.filter((port) => !port.device).map((port) => ({ ...port, server: server.name })));
+  $("link-dialog-title").textContent = `Connect a console port to “${device.name}”`;
+  $("link-port").replaceChildren(...linkPorts.map((port) =>
+    h("option", { value: String(port.id) }, `${port.server} · port ${port.number}${port.label ? ` (${port.label})` : ""}`)));
+  const guess = linkPorts.find((port) => port.label && device.name.toLowerCase().includes(port.label.toLowerCase()));
+  if (guess) $("link-port").value = String(guess.id);
+  $("link-choice").hidden = !linkPorts.length;
+  $("link-none").hidden = Boolean(linkPorts.length);
+  $("link-save").hidden = !linkPorts.length;
+  setError("link-error", "");
+  $("link-dialog").showModal();
+}
+
+$("link-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const port = linkPorts.find((p) => String(p.id) === $("link-port").value);
+  if (!port || !linkingDevice) return;
+  $("link-save").disabled = true;
+  try {
+    await api(`/api/consoles/ports/${port.id}`, { label: port.label || linkingDevice.name.slice(0, 80), device_id: linkingDevice.id }, "PUT");
+    $("link-dialog").close("");
+    await reload();
+  } catch (err) {
+    setError("link-error", err.message);
+  } finally {
+    $("link-save").disabled = false;
   }
 });
 
