@@ -240,10 +240,14 @@ def translate(message: dict) -> list[dict]:
 def summarize(event: dict) -> dict | None:
     """What the screen page wants to know from PiKVM's stream of state events."""
     kind, body = event.get("event_type"), event.get("event") or {}
-    if kind == "atx_state":
-        leds = body.get("leds") or {}
-        return {"state": "power", "wired": bool(body.get("enabled")), "on": bool(leds.get("power"))}
-    if kind == "streamer_state":
+    if not isinstance(body, dict):
+        return None
+    # current PiKVM software calls these "atx" and "streamer"; older releases "atx_state" and "streamer_state"
+    if kind in ("atx", "atx_state"):
+        leds = body.get("leds")
+        if isinstance(leds, dict) and "power" in leds:
+            return {"state": "power", "wired": bool(body.get("enabled", True)), "on": bool(leds["power"])}
+    if kind in ("streamer", "streamer_state"):
         source = ((body.get("streamer") or {}).get("source")) or {}
         if "online" in source:
             return {"state": "signal", "online": bool(source["online"])}

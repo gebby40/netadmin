@@ -530,6 +530,11 @@ def test_pikvm_screen_keyboard_mouse_and_power():
     assert [e["event"] for e in pikvm.translate({"t": "shortcut", "keys": ["ControlLeft", "AltLeft", "Delete"]})][2:4] == [
         {"key": "Delete", "state": True}, {"key": "Delete", "state": False}]
     assert pikvm.translate({"t": "raw", "event_type": "anything"}) == []
+    # state events, under the names of both current and older PiKVM software
+    for name in ("atx", "atx_state"):
+        assert pikvm.summarize({"event_type": name, "event": {"enabled": True, "leds": {"power": True}}}) == {"state": "power", "wired": True, "on": True}
+    assert pikvm.summarize({"event_type": "streamer", "event": {"streamer": None}}) is None
+    assert pikvm.summarize({"event_type": "streamer_state", "event": {"streamer": {"source": {"online": False}}}}) == {"state": "signal", "online": False}
 
     c = signed_in()
     origin = {"origin": "http://testserver"}

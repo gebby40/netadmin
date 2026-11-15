@@ -89,8 +89,9 @@ class FakePiKVM:
             await websocket.accept()
             outer.viewers += 1
             try:
-                await websocket.send_text(json.dumps({"event_type": "atx_state", "event": {"enabled": True, "busy": False, "leds": {"power": outer.power_on, "hdd": False}}}))
-                await websocket.send_text(json.dumps({"event_type": "streamer_state", "event": {"streamer": {"source": {"online": True}}}}))
+                await websocket.send_text(json.dumps({"event_type": "atx", "event": {"enabled": True, "busy": False, "acts": {"power": False, "reset": False}, "leds": {"power": outer.power_on, "hdd": False}}}))
+                await websocket.send_text(json.dumps({"event_type": "streamer", "event": {"params": {}, "streamer": None}}))  # before capture starts
+                await websocket.send_text(json.dumps({"event_type": "streamer", "event": {"streamer": {"source": {"online": True, "resolution": {"width": 1024, "height": 768}}}}}))
                 await websocket.send_text(json.dumps({"event_type": "loop", "event": {}}))
                 while True:
                     outer.events.append(json.loads(await websocket.receive_text()))

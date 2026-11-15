@@ -1397,10 +1397,10 @@ function connectScreen() {
       describe();
       startPicture(portId);
     } else if (note.state === "power") {
-      power = note.wired ? (note.on ? "The machine is on." : "The machine is off.") : "";
+      power = note.on ? "The machine's power light is on." : "";  // a dark light may only mean the KVM's power cable isn't fitted
       describe();
     } else if (note.state === "signal") {
-      signal = note.online ? "" : "No video signal: the machine may be off or asleep.";
+      signal = note.online ? "" : "No video signal: the machine may be off or asleep, or its video cable isn't connected.";
       describe();
     } else if (note.state === "failed" || note.state === "closed") {
       setScreenStatus(note.message || "The connection closed.", true);
@@ -1507,7 +1507,7 @@ async function openPowerDialog() {
   try {
     const now = await api(`/api/kvm-ports/${state.screenPort}/power`);
     $("power-now").textContent = !now.wired ? "The KVM reports that its power cable isn't in use."
-      : now.on === null ? "" : now.on ? "The machine's power light is on." : "The machine's power light is off.";
+      : now.on === null ? "" : now.on ? "The machine's power light is on." : "The KVM sees no power light: the machine is off, or the KVM's power cable isn't fitted to it.";
   } catch (err) { setError("power-error", err.message); }
 }
 
