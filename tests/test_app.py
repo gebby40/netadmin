@@ -389,3 +389,36 @@ def test_live_status_only_checks_private_addresses():
         assert list(c.get("/api/live").json()["devices"]) == [str(up["id"])]
     finally:
         c.__exit__(None, None, None)
+
+
+def test_https_is_on_by_default_with_a_certificate_rackmap_makes(tmp_path):
+    import ssl
+
+    import pytest
+    from cryptography import x509
+    from rackmap import __main__ as launcher
+    from rackmap import db, tls
+
+    cert, key = tls.own_certificate(tmp_path)
+    assert (key.stat().st_mode & 0o777) == 0o600
+    ssl.create_default_context(ssl.Purpose.CLIENT_AUTH).load_cert_chain(cert, key)  # a usable pair
+    names = x509.load_pem_x509_certificate(cert.read_bytes()).extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+    assert "localhost" in names.get_values_for_type(x509.DNSName)
+    before = cert.read_bytes()
+    assert tls.own_certificate(tmp_path) == (cert, key) and cert.read_bytes() == before  # kept, not remade
+
+    real = db.DATA_DIR
+    db.DATA_DIR = tmp_path
+    try:
+        on = launcher.settings({})
+        assert on["port"] == 8443 and on["ssl_certfile"] == str(cert) and "fingerprint" in on["note"]
+        off = launcher.settings({"RACKMAP_TLS": "off"})
+        assert off["port"] == 8080 and "ssl_certfile" not in off and "unencrypted" in off["note"]
+        own = launcher.settings({"RACKMAP_TLS_CERT": str(cert), "RACKMAP_TLS_KEY": str(key), "RACKMAP_PORT": "443"})
+        assert own["port"] == 443 and "note" not in own
+        with pytest.raises(SystemExit):
+            launcher.settings({"RACKMAP_TLS_CERT": str(cert)})
+        with pytest.raises(SystemExit):
+            launcher.settings({"RACKMAP_TLS": "maybe"})
+    finally:
+        db.DATA_DIR = real

@@ -27,12 +27,32 @@ Without Docker (Python 3.11 or newer):
 ```
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
-RACKMAP_DATA=./data .venv/bin/uvicorn rackmap.app:app --host 0.0.0.0 --port 8080
+RACKMAP_DATA=./data .venv/bin/python -m rackmap
 ```
 
-Open `http://<host>:8080`. The first visitor creates the administrator account, so do that
-straight away, and keep the port off untrusted networks. rackmap serves plain HTTP; put it
-behind a reverse proxy or a VPN for anything beyond a trusted management network.
+Open `https://<host>:8443`. The first visitor creates the administrator account, so do that
+straight away, and keep the port off untrusted networks.
+
+### HTTPS
+
+Console sessions carry passwords, so rackmap serves HTTPS out of the box. With nothing
+configured it makes its own certificate on first start. A browser can't verify a home-made
+certificate, so it warns the first time; the connection is encrypted either way, and the
+certificate's fingerprint is printed in rackmap's log if you want to compare it. Two ways to
+get rid of the warning:
+
+- give rackmap a real certificate: set `RACKMAP_TLS_CERT` and `RACKMAP_TLS_KEY` to PEM files;
+- put it behind something that already has one (a reverse proxy such as HAProxy, Caddy or
+  nginx, or `tailscale serve`) and point that at `https://<host>:8443`. Console terminals use
+  WebSockets, so the proxy must pass those through and keep the `Host` header.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `RACKMAP_DATA` | `./data` | where the database, keys and cached images live |
+| `RACKMAP_HOST` | `0.0.0.0` | address to listen on |
+| `RACKMAP_PORT` | `8443` (`8080` with HTTPS off) | port to listen on |
+| `RACKMAP_TLS` | `on` | `off` serves plain HTTP; only for a proxy on the same machine |
+| `RACKMAP_TLS_CERT`, `RACKMAP_TLS_KEY` | none | your own certificate and key |
 
 `deploy/rackmap.service` is a systemd unit for a plain install under `/opt/rackmap` with
 data in `/var/lib/rackmap`.

@@ -5,6 +5,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY rackmap ./rackmap
 ENV RACKMAP_DATA=/data
 VOLUME /data
-EXPOSE 8080
+EXPOSE 8443
 USER 1000
-CMD ["uvicorn", "rackmap.app:app", "--host", "0.0.0.0", "--port", "8080", "--no-server-header"]
+CMD ["python", "-m", "rackmap"]
