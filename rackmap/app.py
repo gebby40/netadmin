@@ -429,8 +429,13 @@ def controller_delete(device_id: int, _user: dict = Depends(current_user)) -> di
 
 
 @app.get("/api/devices/{device_id}/controller/status")
-def controller_status(device_id: int, _user: dict = Depends(current_user)) -> dict:
-    return controllers.status(device_id)
+def controller_status(device_id: int, last: bool = False, _user: dict = Depends(current_user)) -> dict:
+    """`last=true` answers at once with what the controller said last time (`known: false` if
+    it hasn't been asked since rackmap started); otherwise the controller is asked now."""
+    if last:
+        kept = controllers.last_status(device_id)
+        return {"known": kept is not None, **(kept or {})}
+    return {"known": True, **controllers.status(device_id)}
 
 
 @app.post("/api/devices/{device_id}/controller/power")

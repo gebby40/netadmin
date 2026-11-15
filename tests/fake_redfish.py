@@ -36,11 +36,18 @@ class FakeRedfish:
         self._dir = tempfile.mkdtemp(prefix="fake-bmc-")
         self._server = None
         self.port = None
+        self.connections = 0
 
     def _handler(self):
         outer = self
 
         class Handler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"  # like real controllers: several questions on one connection
+
+            def setup(self):
+                outer.connections += 1
+                super().setup()
+
             def log_message(self, *args):
                 pass
 

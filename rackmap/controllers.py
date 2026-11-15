@@ -21,6 +21,8 @@ import json
 import re
 import socket
 import ssl
+import threading
+import time
 
 from . import consoles, db, secrets_store
 
@@ -61,6 +63,12 @@ class Redfish:
         self.host, self.port, self.pinned = host, port, pinned
         self.fingerprint: str | None = None
         self._auth = "Basic " + base64.b64encode(f"{username}:{password}".encode()).decode()
+        self._conn: http.client.HTTPSConnection | None = None
+
+    def close(self) -> None:
+        if self._conn is not None:
+            self._conn.close()
+            self._conn = None
 
     def _open(self) -> http.client.HTTPSConnection:
         last: Exception | None = None
@@ -82,20 +90,35 @@ class Redfish:
         raise ControllerError("Couldn't make a secure connection to the controller.") from last
 
     def request(self, method: str, path: str, body: dict | None = None) -> dict:
-        conn = self._open()  # the password is only sent after the certificate check above
-        try:
-            headers = {"Accept": "application/json", "Authorization": self._auth}
-            data = None
-            if body is not None:
-                data = json.dumps(body).encode()
-                headers["Content-Type"] = "application/json"
-            conn.request(method, path, body=data, headers=headers)
-            response = conn.getresponse()
-            raw = response.read(2_000_000)
-        except (OSError, http.client.HTTPException) as exc:
-            raise ControllerError("The controller stopped answering part-way through.") from exc
-        finally:
-            conn.close()
+        """One request. Reads share a connection: making a new secure connection for every
+        question is what makes older controllers take half a minute to answer. Anything that
+        changes the server always gets a connection of its own and is never sent twice."""
+        headers = {"Accept": "application/json", "Authorization": self._auth}
+        data = None
+        if body is not None:
+            data = json.dumps(body).encode()
+            headers["Content-Type"] = "application/json"
+        reading = method == "GET"
+        if not reading:
+            self.close()
+        for attempt in (1, 2):
+            reused = self._conn is not None
+            conn = self._conn or self._open()  # the password is only sent after the certificate check above
+            self._conn = None
+            try:
+                conn.request(method, path, body=data, headers=headers)
+                response = conn.getresponse()
+                raw = response.read(2_000_000)
+            except (OSError, http.client.HTTPException) as exc:
+                conn.close()
+                if reading and reused and attempt == 1:
+                    continue  # the controller had hung up on the shared connection; ask again on a new one
+                raise ControllerError("The controller stopped answering part-way through.") from exc
+            if reading and not response.will_close:
+                self._conn = conn
+            else:
+                conn.close()
+            break
         if response.status in (401, 403):
             raise ControllerError("The controller refused that name and password.")
         if response.status == 404:
@@ -114,6 +137,12 @@ class Redfish:
         return members[0]["@odata.id"]
 
     def summary(self) -> dict:
+        try:
+            return self._summary()
+        finally:
+            self.close()
+
+    def _summary(self) -> dict:
         path = self.system_path()
         system = self.request("GET", path)
         reset = (system.get("Actions") or {}).get("#ComputerSystem.Reset") or {}
@@ -150,8 +179,11 @@ class Redfish:
     def power(self, action: str) -> str:
         if action not in POWER_ACTIONS:
             raise Invalid("That isn't a power action rackmap knows.")
-        path = self.system_path()
-        system = self.request("GET", path)
+        try:
+            path = self.system_path()
+            system = self.request("GET", path)
+        finally:
+            self.close()
         reset = (system.get("Actions") or {}).get("#ComputerSystem.Reset") or {}
         target = reset.get("target") or path + "/Actions/ComputerSystem.Reset"
         allowed = reset.get("ResetType@Redfish.AllowableValues") or []
@@ -239,22 +271,50 @@ def save(device_id: int, values: dict) -> dict:
         ssh_key = "" if relearn else current["ssh_host_key"]
         db.execute("UPDATE controllers SET kind=?, host=?, username=?, secret=?, cert_sha256=?, console_command=?, kvm_url=?, ssh_host_key=? WHERE device_id=?",
                    row + (ssh_key, device_id))
+    forget(device_id)
     return get(device_id)
 
 
 def remove(device_id: int) -> None:
     db.execute("DELETE FROM controllers WHERE device_id = ?", (device_id,))
+    forget(device_id)
+
+
+# The last answer from each controller, kept in memory so the page has something to show at once
+# while a fresh answer (seconds on a good day, much longer on old hardware) is on its way.
+_last: dict[int, tuple[float, dict]] = {}
+_last_lock = threading.Lock()
+
+
+def forget(device_id: int) -> None:
+    with _last_lock:
+        _last.pop(device_id, None)
+
+
+def last_status(device_id: int) -> dict | None:
+    """What the controller said last time, with how long ago that was, or None."""
+    _need(device_id)
+    with _last_lock:
+        kept = _last.get(device_id)
+    if not kept:
+        return None
+    return {**kept[1], "age_seconds": int(time.monotonic() - kept[0])}
 
 
 def status(device_id: int) -> dict:
     try:
-        return _client(_need(device_id)).summary()
+        answer = _client(_need(device_id)).summary()
     except ValueError as exc:  # unreadable saved password
         raise ControllerError(f"{exc} Re-enter the controller's password under Edit.") from None
+    with _last_lock:
+        _last[device_id] = (time.monotonic(), answer)
+    return {**answer, "age_seconds": 0}
 
 
 def power(device_id: int, action: str) -> str:
-    return _client(_need(device_id)).power(action)
+    sent = _client(_need(device_id)).power(action)
+    forget(device_id)  # what we knew about its power state is no longer true
+    return sent
 
 
 async def open_console(device_id: int, cols: int = 80, rows: int = 24) -> consoles.Session:

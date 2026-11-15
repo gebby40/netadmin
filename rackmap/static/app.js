@@ -298,47 +298,71 @@ const POWER_LABELS = {
   off: { label: "Force off", confirm: "Power is cut immediately, like holding the power button. Anything unsaved on the server is lost." },
 };
 
-async function loadControllerPanel(device) {
-  const seq = ++controllerSeq;
-  const panel = $("controller-panel");
-  if (!panel) return;
-  let info;
-  let status = null;
-  let problem = "";
-  try {
-    info = (await api(`/api/devices/${device.id}/controller`)).controller;
-    status = await api(`/api/devices/${device.id}/controller/status`);
-  } catch (err) {
-    problem = err.message;
-  }
-  if (seq !== controllerSeq || !$("controller-panel") || state.selectedId !== device.id) return;
+function controllerRows(device, info, status, note, problem) {
   const rows = [];
   if (status) {
     const on = status.power_state === "On";
     rows.push(h("p", { class: "power-line" },
       h("span", { class: on ? "pill on" : "pill off", text: on ? "Powered on" : status.power_state === "Off" ? "Powered off" : status.power_state }),
       status.health ? h("span", { class: status.health === "OK" ? "muted" : "down-text", text: `Health: ${status.health}` }) : null));
-    const facts = h("dl", { class: "facts" },
+    rows.push(h("dl", { class: "facts" },
       fact("Reports as", [status.manufacturer, status.model].filter(Boolean).join(" ")),
       fact("Service tag", status.serial && h("span", { class: "mono", text: status.serial })),
       fact("Hardware", [status.processors, status.memory_gib ? `${Math.round(status.memory_gib)} GB memory` : ""].filter(Boolean).join(", ")),
       fact("Power draw", status.watts !== null && status.watts !== undefined ? `${status.watts} W` : ""),
       fact("Temperatures", status.temperatures.length ? status.temperatures.map((t) => `${t.name.replace(/^System Board /, "")} ${t.celsius}°C`).join(", ") : ""),
-      fact("Power supplies", status.power_supplies.length ? status.power_supplies.map((p) => `${p.name.replace(/ Status$/, "")} ${p.health || "?"}`).join(", ") : ""));
-    rows.push(facts);
-    const wanted = on ? ["shutdown", "restart", "off"] : ["on"];
-    rows.push(h("div", { class: "buttons" }, wanted.filter((a) => status.actions.includes(a)).map((action) =>
-      h("button", { type: "button", class: action === "off" ? "danger" : "secondary", onclick: () => sendPower(device, action) }, POWER_LABELS[action].label))));
-  } else {
-    rows.push(h("p", { class: "error", text: problem || "The controller didn't answer." }));
+      fact("Power supplies", status.power_supplies.length ? status.power_supplies.map((p) => `${p.name.replace(/ Status$/, "")} ${p.health || "?"}`).join(", ") : "")));
+  }
+  if (note) rows.push(h("p", { class: "hint", text: note }));
+  if (problem) rows.push(h("p", { class: "error", text: problem }));
+  if (status) {
+    const wanted = status.power_state === "On" ? ["shutdown", "restart", "off"] : ["on"];
+    const buttons = wanted.filter((a) => status.actions.includes(a)).map((action) =>
+      h("button", { type: "button", class: action === "off" ? "danger" : "secondary", onclick: () => sendPower(device, action) }, POWER_LABELS[action].label));
+    if (buttons.length) rows.push(h("div", { class: "buttons" }, buttons));
   }
   const links = [];
   if (info && info.has_console) links.push(h("button", { type: "button", class: "secondary", onclick: () => { state.view = "consoles"; state.openPort = `c${device.id}`; showView(); } }, "Open text console"));
   if (info && info.kvm_url) links.push(h("a", { class: "button-link", href: info.kvm_url, target: "_blank", rel: "noopener noreferrer" }, "Open remote screen"));
-  links.push(h("button", { type: "button", class: "link", onclick: () => openControllerDialog(device, info) }, "Edit controller"));
+  links.push(h("button", { type: "button", class: "secondary", onclick: () => openControllerDialog(device, info) }, "Edit controller"));
   rows.push(h("div", { class: "buttons" }, links));
   if (info && !info.kvm_url) rows.push(h("p", { class: "hint", text: "No remote screen is set up. If you attach a network KVM to this equipment, add its address under Edit controller to open it from here." }));
-  panel.replaceChildren(h("h2", { text: "Management controller" }), ...rows);
+  return rows;
+}
+
+function ago(seconds) {
+  if (seconds < 90) return "a moment ago";
+  if (seconds < 5400) return `${Math.round(seconds / 60)} minutes ago`;
+  return `${Math.round(seconds / 3600)} hours ago`;
+}
+
+// The controller can take a long time to answer (half a minute on older ones), so the panel
+// never waits for it: the buttons that don't need an answer appear at once, along with what the
+// controller said last time, and the fresh answer replaces that when it arrives.
+async function loadControllerPanel(device) {
+  const seq = ++controllerSeq;
+  const current = () => seq === controllerSeq && $("controller-panel") && state.selectedId === device.id;
+  const show = (...args) => { if (current()) $("controller-panel").replaceChildren(h("h2", { text: "Management controller" }), ...controllerRows(device, ...args)); };
+  const asking = "Asking the controller how the server is doing. Older controllers can take half a minute to answer.";
+  let info = null;
+  let status = null;
+  try {
+    info = (await api(`/api/devices/${device.id}/controller`)).controller;
+  } catch (err) {
+    return show(null, null, "", err.message);
+  }
+  show(info, null, asking, "");
+  try {
+    const kept = await api(`/api/devices/${device.id}/controller/status?last=true`);
+    if (kept.known) status = kept;
+  } catch { /* the fresh answer below reports any problem */ }
+  if (status) show(info, status, `As of ${ago(status.age_seconds)}. Checking again…`, "");
+  try {
+    status = await api(`/api/devices/${device.id}/controller/status`);
+    show(info, status, "", "");
+  } catch (err) {
+    show(info, status, status ? `As of ${ago(status.age_seconds)}.` : "", err.message || "The controller didn't answer.");
+  }
 }
 
 async function sendPower(device, action) {

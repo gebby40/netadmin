@@ -326,13 +326,21 @@ def test_management_controller_power_and_console():
             assert "bmc-secret" not in raw
             assert c.get("/api/overview").json()["unplaced"][0]["has_controller"] is True
 
+            # saving forgets what was known, so nothing is remembered until the controller is asked
+            assert c.get(url + "/status?last=true").json() == {"known": False}
+            before = bmc.connections
             status = c.get(url + "/status").json()
+            assert bmc.connections == before + 1  # five questions, one connection
             assert status["power_state"] == "On" and status["model"] == "PowerEdge R720xd" and status["watts"] == 250
+            # ...and then the last answer is available at once, without asking again
+            kept = c.get(url + "/status?last=true").json()
+            assert kept["known"] and kept["power_state"] == "On" and bmc.connections == before + 1
             assert status["temperatures"] == [{"name": "Inlet Temp", "celsius": 21}]
             # only the actions this controller offers are listed ("restart" maps to ForceRestart here)
             assert set(status["actions"]) == {"on", "shutdown", "restart", "off"}
 
             assert c.post(url + "/power", json={"action": "shutdown"}).json() == {"sent": "GracefulShutdown"}
+            assert c.get(url + "/status?last=true").json() == {"known": False}  # stale after a power action
             assert c.get(url + "/status").json()["power_state"] == "Off"
             assert c.post(url + "/power", json={"action": "restart"}).json() == {"sent": "ForceRestart"}
             assert c.post(url + "/power", json={"action": "explode"}).status_code == 422
