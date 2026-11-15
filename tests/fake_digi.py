@@ -38,8 +38,14 @@ class FakeDigi:
 
         async def handle(process):
             command = process.command or ""
-            if command == "console com2":  # a management controller's serial console: straight through
-                process.stdout.write(b"Connected to Serial Device 2.\r\nserver login: ")
+            if not command:  # a management controller's own command line
+                process.stdout.write(b"\r\n/admin1-> ")
+                typed = (await process.stdin.readuntil(b"\r")).strip()
+                if typed != b"console com2":
+                    process.stdout.write(b"COMMAND NOT RECOGNIZED\r\n/admin1-> ")
+                    process.exit(1)
+                    return
+                process.stdout.write(b"console com2\r\nConnected to Serial Device 2. To end type: ^\\\r\nserver login: ")
                 while True:
                     try:
                         data = await process.stdin.read(1024)

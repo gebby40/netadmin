@@ -12,6 +12,7 @@ equipment whose controller has no remote screen.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import http.client
@@ -270,7 +271,24 @@ async def open_console(device_id: int, cols: int = 80, rows: int = 24) -> consol
         db.execute("UPDATE controllers SET ssh_host_key = ? WHERE device_id = ?",
                    (conn.get_server_host_key().export_public_key("openssh").decode().strip(), device_id))
     try:
-        process = await conn.create_process(r["console_command"], term_type="xterm", term_size=(cols, rows), encoding=None)
+        # Controllers run their console command from their own command line, not as an SSH
+        # "run this" request, so open the command line, let its greeting finish, then type it.
+        process = await conn.create_process(term_type="xterm", term_size=(cols, rows), encoding=None)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + 8
+        got_any = False
+        while loop.time() < deadline:
+            try:
+                chunk = await asyncio.wait_for(process.stdout.read(4096), timeout=1.0 if got_any else 4.0)
+            except asyncio.TimeoutError:
+                break  # quiet: the prompt is waiting
+            if not chunk:
+                raise consoles.ConsoleError("The controller closed the connection before its command line appeared.")
+            got_any = True
+        process.stdin.write(r["console_command"].encode() + b"\r")
+    except consoles.ConsoleError:
+        conn.close()
+        raise
     except Exception as exc:  # noqa: BLE001 - any failure here means the console could not start
         conn.close()
         raise consoles.ConsoleError(f"Couldn't start the text console ({type(exc).__name__}).") from None
