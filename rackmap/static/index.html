@@ -227,6 +227,31 @@
     </form>
   </dialog>
 
+  <dialog id="controller-dialog">
+    <form method="dialog" id="controller-form" novalidate>
+      <h1 id="controller-dialog-title">Connect the management controller</h1>
+      <p class="hint">Servers have a small built-in computer for management: iDRAC on Dell, iLO on HPE, BMC or IPMI on others. rackmap uses it to show power and health and to switch the server on and off.</p>
+      <label>Controller address<input name="host" maxlength="120" placeholder="192.168.1.60" autocomplete="off" inputmode="url"></label>
+      <div class="row">
+        <label>Account<input name="username" maxlength="64" autocomplete="off" placeholder="root"></label>
+        <label>Password<input name="password" type="password" maxlength="256" autocomplete="new-password"></label>
+      </div>
+      <p class="hint" id="controller-pw-note" hidden>Leave the password empty to keep the saved one. Entering it again also accepts the controller's current certificate.</p>
+      <label>Text console command (optional)<input name="console_command" maxlength="80" autocomplete="off" placeholder="console com2" spellcheck="false"></label>
+      <p class="hint">What the controller's SSH login runs to reach the server's serial console. Dell iDRAC: <code>console com2</code>. HPE iLO: <code>vsp</code>. Leave empty if you don't use it.</p>
+      <label>Network KVM address (optional)<input name="kvm_url" maxlength="300" autocomplete="off" placeholder="https://…" inputmode="url"></label>
+      <p class="hint">If a network KVM is attached to this equipment, its web address goes here and rackmap links to it as the remote screen.</p>
+      <p class="hint">rackmap signs in to check these details before saving. The password is stored encrypted on this rackmap server.</p>
+      <p class="error" id="controller-error" role="alert" hidden></p>
+      <div class="buttons">
+        <button type="button" class="danger" id="controller-delete" hidden>Disconnect</button>
+        <span class="spacer"></span>
+        <button type="button" class="secondary" data-close>Cancel</button>
+        <button type="submit" class="primary" id="controller-save">Connect</button>
+      </div>
+    </form>
+  </dialog>
+
   <dialog id="rack-dialog">
     <form method="dialog" id="rack-form" novalidate>
       <h1 id="rack-dialog-title">Add rack</h1>

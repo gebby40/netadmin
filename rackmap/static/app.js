@@ -4,7 +4,7 @@ const main = document.getElementById("main");
 const bar = document.getElementById("bar");
 const $ = (id) => document.getElementById(id);
 
-const state = { version: "", view: "racks", racks: [], unplaced: [], rackId: null, face: "front", selectedId: null, newFound: 0, discovery: null, showIgnored: false, consoles: [], kinds: {}, openPort: null };
+const state = { version: "", view: "racks", racks: [], unplaced: [], rackId: null, face: "front", selectedId: null, newFound: 0, live: {}, discovery: null, showIgnored: false, consoles: [], kinds: {}, openPort: null };
 
 /* ---------- talking to the server ---------- */
 
@@ -159,6 +159,7 @@ function render() {
   if (rack) renderRack(rack);
   renderUnplaced();
   renderDetail();
+  paintLive();
 }
 
 function renderTabs() {
@@ -229,7 +230,7 @@ function renderRack(rack) {
     }
     labels.push(place(h("li", { class: device.id === state.selectedId ? "selected" : "" },
       h("button", { type: "button", class: "label", onclick: select },
-        h("span", { class: "label-name", text: device.name }),
+        h("span", { class: "label-name" }, h("span", { class: "dot", "data-live": String(device.id), hidden: true }), device.name),
         h("span", { class: "label-meta", text: [where, device.ip].filter(Boolean).join(" · ") })))));
   }
   bay.replaceChildren(...slots, ...blocks);
@@ -242,6 +243,133 @@ function renderUnplaced() {
     h("button", { type: "button", class: `row-button${device.id === state.selectedId ? " selected" : ""}`, onclick: () => { state.selectedId = device.id; render(); } },
       h("span", { class: "label-name", text: device.name }),
       h("span", { class: "label-meta", text: [device.manufacturer, device.model].filter(Boolean).join(" ") || "No model recorded" })))));
+}
+
+/* ---------- live status ---------- */
+
+let liveTimer = null;
+
+function describeSince(seconds) {
+  if (seconds < 90) return "just now";
+  if (seconds < 5400) return `${Math.round(seconds / 60)} minutes`;
+  if (seconds < 129600) return `${Math.round(seconds / 3600)} hours`;
+  return `${Math.round(seconds / 86400)} days`;
+}
+
+function paintLive() {
+  const live = state.live || {};
+  const now = Date.now() / 1000;
+  for (const dot of document.querySelectorAll("[data-live]")) {
+    const entry = live[dot.dataset.live];
+    dot.hidden = !entry;
+    if (entry) {
+      dot.className = entry.up ? "dot up" : "dot down";
+      dot.title = entry.up ? "Answering on the network" : "Not answering";
+    }
+  }
+  for (const line of document.querySelectorAll("[data-live-text]")) {
+    const entry = live[line.dataset.liveText];
+    if (!entry) { line.textContent = "Not checked yet"; continue; }
+    const since = describeSince(now - entry.since);
+    line.textContent = entry.up ? (since === "just now" ? "Answering" : `Answering (for ${since})`) : (since === "just now" ? "Not answering" : `Not answering (for ${since})`);
+    line.className = entry.up ? "" : "down-text";
+  }
+}
+
+async function refreshLive() {
+  clearTimeout(liveTimer);
+  if (state.view !== "racks") return;
+  try {
+    state.live = (await api("/api/live")).devices;
+    paintLive();
+  } catch (err) { /* shown as "not checked"; the next round tries again */ }
+  liveTimer = setTimeout(refreshLive, 30000);
+}
+
+/* ---------- management controller ---------- */
+
+let controllerSeq = 0;
+let editingControllerDevice = null;
+
+const POWER_LABELS = {
+  on: { label: "Power on", confirm: null },
+  shutdown: { label: "Shut down", confirm: "The controller asks the operating system to shut down cleanly. Everything running on it stops." },
+  restart: { label: "Restart", confirm: "The server is restarted. If the controller can't ask the operating system first, this is like pressing the reset button." },
+  off: { label: "Force off", confirm: "Power is cut immediately, like holding the power button. Anything unsaved on the server is lost." },
+};
+
+async function loadControllerPanel(device) {
+  const seq = ++controllerSeq;
+  const panel = $("controller-panel");
+  if (!panel) return;
+  let info;
+  let status = null;
+  let problem = "";
+  try {
+    info = (await api(`/api/devices/${device.id}/controller`)).controller;
+    status = await api(`/api/devices/${device.id}/controller/status`);
+  } catch (err) {
+    problem = err.message;
+  }
+  if (seq !== controllerSeq || !$("controller-panel") || state.selectedId !== device.id) return;
+  const rows = [];
+  if (status) {
+    const on = status.power_state === "On";
+    rows.push(h("p", { class: "power-line" },
+      h("span", { class: on ? "pill on" : "pill off", text: on ? "Powered on" : status.power_state === "Off" ? "Powered off" : status.power_state }),
+      status.health ? h("span", { class: status.health === "OK" ? "muted" : "down-text", text: `Health: ${status.health}` }) : null));
+    const facts = h("dl", { class: "facts" },
+      fact("Reports as", [status.manufacturer, status.model].filter(Boolean).join(" ")),
+      fact("Service tag", status.serial && h("span", { class: "mono", text: status.serial })),
+      fact("Hardware", [status.processors, status.memory_gib ? `${Math.round(status.memory_gib)} GB memory` : ""].filter(Boolean).join(", ")),
+      fact("Power draw", status.watts !== null && status.watts !== undefined ? `${status.watts} W` : ""),
+      fact("Temperatures", status.temperatures.length ? status.temperatures.map((t) => `${t.name.replace(/^System Board /, "")} ${t.celsius}°C`).join(", ") : ""),
+      fact("Power supplies", status.power_supplies.length ? status.power_supplies.map((p) => `${p.name.replace(/ Status$/, "")} ${p.health || "?"}`).join(", ") : ""));
+    rows.push(facts);
+    const wanted = on ? ["shutdown", "restart", "off"] : ["on"];
+    rows.push(h("div", { class: "buttons" }, wanted.filter((a) => status.actions.includes(a)).map((action) =>
+      h("button", { type: "button", class: action === "off" ? "danger" : "secondary", onclick: () => sendPower(device, action) }, POWER_LABELS[action].label))));
+  } else {
+    rows.push(h("p", { class: "error", text: problem || "The controller didn't answer." }));
+  }
+  const links = [];
+  if (info && info.has_console) links.push(h("button", { type: "button", class: "secondary", onclick: () => { state.view = "consoles"; state.openPort = `c${device.id}`; showView(); } }, "Open text console"));
+  if (info && info.kvm_url) links.push(h("a", { class: "button-link", href: info.kvm_url, target: "_blank", rel: "noopener noreferrer" }, "Open remote screen"));
+  links.push(h("button", { type: "button", class: "link", onclick: () => openControllerDialog(device, info) }, "Edit controller"));
+  rows.push(h("div", { class: "buttons" }, links));
+  if (info && !info.kvm_url) rows.push(h("p", { class: "hint", text: "No remote screen is set up. If you attach a network KVM to this equipment, add its address under Edit controller to open it from here." }));
+  panel.replaceChildren(h("h2", { text: "Management controller" }), ...rows);
+}
+
+async function sendPower(device, action) {
+  const spec = POWER_LABELS[action];
+  if (spec.confirm && !(await confirmDialog(`${spec.label}: “${device.name}”?`, spec.confirm, spec.label))) return;
+  try {
+    await api(`/api/devices/${device.id}/controller/power`, { action });
+  } catch (err) {
+    await failed(err);
+    return;
+  }
+  const panel = $("controller-panel");
+  if (panel) panel.replaceChildren(h("h2", { text: "Management controller" }), h("p", { class: "hint", text: `${spec.label} sent. Checking again in a few seconds…` }));
+  setTimeout(() => { if (state.selectedId === device.id) loadControllerPanel(device); }, 6000);
+}
+
+function openControllerDialog(device, info) {
+  editingControllerDevice = device;
+  const form = $("controller-form");
+  form.reset();
+  $("controller-dialog-title").textContent = info ? `Controller for “${device.name}”` : `Connect the controller for “${device.name}”`;
+  $("controller-save").textContent = info ? "Save" : "Connect";
+  $("controller-delete").hidden = !info;
+  $("controller-pw-note").hidden = !info;
+  if (info) {
+    for (const key of ["host", "username", "console_command", "kvm_url"]) form.elements[key].value = info[key];
+  }
+  form.dataset.editing = info ? "1" : "";
+  setError("controller-error", "");
+  $("controller-dialog").showModal();
+  form.elements.host.focus();
 }
 
 function fact(label, value) {
@@ -272,18 +400,22 @@ function renderDetail() {
       fact("Size", size),
       fact("Location", placed ? `${rack.name}, ${span(device)}, ${device.face}` : "Not in a rack"),
       fact("IP address", device.ip && h("span", { class: "mono", text: device.ip })),
+      device.ip ? [h("dt", { text: "On the network" }), h("dd", { id: "live-line", "data-live-text": String(device.id) }, "Not checked yet")] : null,
       fact("MAC address", device.mac && h("span", { class: "mono", text: device.mac })),
       fact("Serial number", device.serial && h("span", { class: "mono", text: device.serial })),
       fact("Admin page", adminLink),
       fact("Notes", device.notes && h("span", { class: "notes", text: device.notes }))),
     (device.console_ports || []).length ? h("div", { class: "buttons console-links" },
       device.console_ports.map((port) => h("button", { type: "button", class: "primary", onclick: () => { state.view = "consoles"; state.openPort = port.id; showView(); } },
-        device.console_ports.length > 1 ? `Open console (port ${port.number})` : "Open console"))) : null,
+        device.console_ports.length > 1 ? `Open console (port ${port.number})` : "Open console"))) :: "",
+    device.has_controller ? h("section", { class: "controller", id: "controller-panel" }, h("h2", { text: "Management controller" }), h("p", { class: "hint", text: "Asking the controller…" })) : "",
     h("div", { class: "buttons" },
       h("button", { type: "button", class: "secondary", onclick: () => openDeviceDialog(device) }, "Edit"),
+      device.has_controller ? null : h("button", { type: "button", class: "secondary", onclick: () => openControllerDialog(device, null) }, "Connect controller"),
       placed ? h("button", { type: "button", class: "secondary", onclick: () => takeOut(device) }, "Take out of rack") : null,
       h("span", { class: "spacer" }),
       h("button", { type: "button", class: "danger", onclick: () => removeDevice(device) }, "Delete")));
+  if (device.has_controller) loadControllerPanel(device);
 }
 
 async function takeOut(device) {
@@ -564,6 +696,7 @@ $("device-form").addEventListener("submit", async (event) => {
     if (saved.rack_id) state.rackId = saved.rack_id;
     $("device-dialog").close("");
     if (state.view === "discovery") { await reload(); await loadDiscovery(); } else { await reload(); }
+    setTimeout(refreshLive, 4000); // the server re-checks soon after equipment changes
   } catch (err) {
     setError("device-error", err.message);
   } finally {
@@ -755,13 +888,25 @@ function setTermStatus(text, canReconnect) {
 }
 
 function openTerminal(portId) {
-  const found = findPort(portId);
-  if (!found) return;
+  const isController = typeof portId === "string";
+  let title;
+  let path;
+  if (isController) {
+    const device = findDevice(Number(portId.slice(1)));
+    if (!device) return;
+    title = `${device.name} · text console`;
+    path = `/ws/controller/${device.id}`;
+  } else {
+    const found = findPort(portId);
+    if (!found) return;
+    const name = portName(found.port);
+    title = `${found.server.name} · port ${found.port.number}${name ? ` · ${name}` : ""}`;
+    path = `/ws/console/${portId}`;
+  }
   closeTerminal();
   state.openPort = portId;
   $("term-card").hidden = false;
-  const name = portName(found.port);
-  $("term-title").textContent = `${found.server.name} · port ${found.port.number}${name ? ` · ${name}` : ""}`;
+  $("term-title").textContent = title;
   setTermStatus("Connecting…", false);
   terminal = new Terminal({ cursorBlink: true, convertEol: false, scrollback: 5000, fontSize: 14,
     fontFamily: 'ui-monospace, "SF Mono", Menlo, Consolas, monospace', theme: { background: "#0e1110", foreground: "#e8ece9", cursor: "#4fc3a6" } });
@@ -770,7 +915,7 @@ function openTerminal(portId) {
   terminal.open($("term"));
   fitAddon.fit();
   const scheme = location.protocol === "https:" ? "wss" : "ws";
-  const ws = new WebSocket(`${scheme}://${location.host}/ws/console/${portId}`);
+  const ws = new WebSocket(`${scheme}://${location.host}${path}`);
   ws.binaryType = "arraybuffer";
   socket = ws;
   const send = (message) => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(message)); };
@@ -800,7 +945,7 @@ window.addEventListener("resize", () => { if (fitAddon && state.view === "consol
 
 function renderConsoles() {
   if (state.view !== "consoles" || !$("console-servers")) return;
-  $("no-consoles").hidden = state.consoles.length > 0;
+  $("no-consoles").hidden = state.consoles.length > 0 || typeof state.openPort === "string";
   $("console-actions").hidden = state.consoles.length === 0;
   $("console-servers").replaceChildren(...state.consoles.map((server) => h("section", { class: "card console-server" },
     h("div", { class: "rack-head" },
@@ -916,6 +1061,41 @@ function consolesScreen() {
   $("term-reconnect").addEventListener("click", () => { const id = state.openPort; if (id !== null) { openTerminal(id); renderConsoles(); } });
 }
 
+$("controller-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = event.target;
+  const device = editingControllerDevice;
+  const body = { host: form.elements.host.value.trim(), username: form.elements.username.value.trim(), password: form.elements.password.value,
+    console_command: form.elements.console_command.value.trim(), kvm_url: form.elements.kvm_url.value.trim() };
+  if (!body.host) return setError("controller-error", "Enter the controller's address.");
+  if (!body.username) return setError("controller-error", "Enter the account rackmap signs in with.");
+  if (!form.dataset.editing && !body.password) return setError("controller-error", "Enter the password for that account.");
+  const button = $("controller-save");
+  button.disabled = true;
+  button.textContent = "Signing in to check…";
+  try {
+    await api(`/api/devices/${device.id}/controller`, body, "PUT");
+    $("controller-dialog").close("");
+    state.selectedId = device.id;
+    await reload();
+  } catch (err) {
+    setError("controller-error", err.message);
+  } finally {
+    button.disabled = false;
+    button.textContent = form.dataset.editing ? "Save" : "Connect";
+  }
+});
+
+$("controller-delete").addEventListener("click", async () => {
+  const device = editingControllerDevice;
+  $("controller-dialog").close("");
+  if (!(await confirmDialog(`Disconnect the controller for “${device.name}”?`, "Its address and saved password are deleted from rackmap. The controller itself isn't changed.", "Disconnect controller"))) return;
+  try {
+    await api(`/api/devices/${device.id}/controller`, undefined, "DELETE");
+    await reload();
+  } catch (err) { await failed(err); }
+});
+
 /* ---------- start-up ---------- */
 
 function racksScreen() {
@@ -932,6 +1112,7 @@ function racksScreen() {
 async function showView() {
   bar.hidden = false;
   clearTimeout(scanTimer);
+  clearTimeout(liveTimer);
   if (state.view !== "consoles" || !$("term-card")) { const keep = state.view === "consoles" ? state.openPort : null; closeTerminal(); state.openPort = keep; }
   renderNav();
   try {
@@ -946,6 +1127,7 @@ async function showView() {
     } else {
       racksScreen();
       render();
+      refreshLive();
     }
   } catch (err) {
     if (err.status === 401) return start();

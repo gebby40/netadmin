@@ -538,3 +538,34 @@ progress { width: 100%; height: 8px; accent-color: var(--accent); }
 .term .xterm { height: 100%; }
 
 .console-links { margin-bottom: 12px; }
+
+/* ---------- live status and management controller ---------- */
+
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: middle; background: var(--muted); }
+.dot.up { background: #2e9e7f; }
+.dot.down { background: none; box-shadow: inset 0 0 0 2px var(--danger); }
+.down-text { color: var(--danger); }
+
+.controller { border-top: 1px solid var(--line); padding-top: 14px; margin: 0 0 16px; display: grid; gap: 10px; }
+.controller p { margin: 0; }
+.controller .facts { margin: 0; }
+.power-line { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+
+.pill { display: inline-block; border-radius: 999px; padding: 4px 10px; font-size: 0.85rem; font-weight: 600; }
+.pill.on { background: #2e9e7f; color: #ffffff; }
+.pill.off { background: none; color: var(--ink); box-shadow: inset 0 0 0 1.5px var(--muted); }
+
+.button-link {
+  display: inline-flex;
+  align-items: center;
+  background: var(--surface);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 14px;
+  min-height: 44px;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+code { font-family: var(--mono); font-size: 0.88em; background: var(--bg); padding: 1px 5px; border-radius: 4px; }

@@ -120,6 +120,22 @@ MIGRATIONS: list[str] = [
         UNIQUE (server_id, number)
     );
     """,
+    """
+    -- Management controllers (iDRAC, iLO, BMC), one per piece of equipment. `cert_sha256` is
+    -- the HTTPS certificate remembered on first use; `ssh_host_key` likewise for the text console.
+    CREATE TABLE controllers (
+        device_id INTEGER PRIMARY KEY REFERENCES devices(id) ON DELETE CASCADE,
+        kind TEXT NOT NULL,
+        host TEXT NOT NULL,
+        username TEXT NOT NULL,
+        secret TEXT NOT NULL,
+        cert_sha256 TEXT NOT NULL,
+        ssh_host_key TEXT NOT NULL DEFAULT '',
+        console_command TEXT NOT NULL DEFAULT '',
+        kvm_url TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    """,
 ]
 
 _lock = threading.Lock()

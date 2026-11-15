@@ -26,6 +26,7 @@ def _device(r) -> dict:
     d["console_ports"] = [dict(r) for r in db.query(
         "SELECT p.id, p.number, p.label, s.name AS server_name FROM console_ports p JOIN console_servers s ON s.id = p.server_id "
         "WHERE p.device_id = ? ORDER BY s.name, p.number", (d["id"],))]
+    d["has_controller"] = bool(db.query("SELECT 1 FROM controllers WHERE device_id = ?", (d["id"],)))
     return d
 
 

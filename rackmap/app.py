@@ -7,6 +7,7 @@ from pathlib import Path
 
 import asyncio
 import json
+import os
 from urllib.parse import urlsplit
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
@@ -14,7 +15,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import __version__, auth, catalog, consoles, db, discovery, inventory
+from . import __version__, auth, catalog, consoles, controllers, db, discovery, inventory, monitor
 
 STATIC = Path(__file__).parent / "static"
 
@@ -23,7 +24,10 @@ STATIC = Path(__file__).parent / "static"
 async def lifespan(_app: FastAPI):
     db.connect()
     catalog.load()
+    if os.environ.get("RACKMAP_MONITOR", "1") != "0":
+        monitor.start()
     yield
+    monitor.stop()
     db.close()
 
 
@@ -221,12 +225,16 @@ def free_positions(rack_id: int, u_height: float, face: str = "front", full_dept
 
 @app.post("/api/devices")
 def create_device(body: DeviceBody, _user: dict = Depends(current_user)) -> dict:
-    return inventory.create_device(body.model_dump(exclude_unset=True))
+    device = inventory.create_device(body.model_dump(exclude_unset=True))
+    monitor.poke()
+    return device
 
 
 @app.patch("/api/devices/{device_id}")
 def update_device(device_id: int, body: DeviceBody, _user: dict = Depends(current_user)) -> dict:
-    return inventory.update_device(device_id, body.model_dump(exclude_unset=True))
+    device = inventory.update_device(device_id, body.model_dump(exclude_unset=True))
+    monitor.poke()
+    return device
 
 
 @app.delete("/api/devices/{device_id}")
@@ -313,8 +321,8 @@ def _same_origin(websocket: WebSocket) -> bool:
     return bool(origin and host and urlsplit(origin).netloc == host)
 
 
-@app.websocket("/ws/console/{port_id}")
-async def console_socket(websocket: WebSocket, port_id: int) -> None:
+async def _terminal(websocket: WebSocket, opener) -> None:
+    """Bridge a browser terminal to a console session. `opener` is awaited to get the session."""
     if not _same_origin(websocket) or not auth.session_user(websocket.cookies.get(auth.SESSION_COOKIE)):
         await websocket.close(code=4401)
         return
@@ -327,7 +335,7 @@ async def console_socket(websocket: WebSocket, port_id: int) -> None:
     try:
         await say("connecting")
         try:
-            session = await consoles.open_port(port_id)
+            session = await opener()
         except consoles.ConsoleError as exc:
             await say("failed", str(exc))
             await websocket.close(code=1000)
@@ -354,14 +362,82 @@ async def console_socket(websocket: WebSocket, port_id: int) -> None:
         done, pending = await asyncio.wait({out_task, in_task}, return_when=asyncio.FIRST_COMPLETED)
         for task in pending:
             task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+        if in_task in done and not in_task.cancelled():
+            in_task.exception()  # the browser going away is expected; mark it as seen
         if out_task in done and not out_task.cancelled() and out_task.exception() is None:
-            await say("closed", "The console server ended the session.")
+            await say("closed", "The far end closed the session.")
             await websocket.close(code=1000)
     except (WebSocketDisconnect, RuntimeError, ValueError):
         pass
     finally:
         if session is not None:
             session.close()
+
+
+@app.websocket("/ws/console/{port_id}")
+async def console_socket(websocket: WebSocket, port_id: int) -> None:
+    await _terminal(websocket, lambda: consoles.open_port(port_id))
+
+
+@app.websocket("/ws/controller/{device_id}")
+async def controller_socket(websocket: WebSocket, device_id: int) -> None:
+    await _terminal(websocket, lambda: controllers.open_console(device_id))
+
+
+class ControllerBody(BaseModel):
+    kind: str = Field(default="redfish", max_length=20)
+    host: str = Field(max_length=120)
+    username: str = Field(max_length=64)
+    password: str = Field(default="", max_length=256)  # empty when editing keeps the saved one
+    console_command: str = Field(default="", max_length=80)
+    kvm_url: str = Field(default="", max_length=300)
+
+
+class PowerBody(BaseModel):
+    action: str = Field(max_length=20)
+
+
+@app.exception_handler(controllers.Invalid)
+async def invalid_controller(_request: Request, exc: controllers.Invalid) -> JSONResponse:
+    return JSONResponse(status_code=422, content={"detail": str(exc)})
+
+
+@app.exception_handler(controllers.ControllerError)
+async def controller_failed(_request: Request, exc: controllers.ControllerError) -> JSONResponse:
+    return JSONResponse(status_code=502, content={"detail": str(exc)})
+
+
+@app.get("/api/devices/{device_id}/controller")
+def controller_get(device_id: int, _user: dict = Depends(current_user)) -> dict:
+    return {"kinds": controllers.KINDS, "controller": controllers.get(device_id)}
+
+
+@app.put("/api/devices/{device_id}/controller")
+def controller_save(device_id: int, body: ControllerBody, _user: dict = Depends(current_user)) -> dict:
+    return {"controller": controllers.save(device_id, body.model_dump())}
+
+
+@app.delete("/api/devices/{device_id}/controller")
+def controller_delete(device_id: int, _user: dict = Depends(current_user)) -> dict:
+    controllers.remove(device_id)
+    return {}
+
+
+@app.get("/api/devices/{device_id}/controller/status")
+def controller_status(device_id: int, _user: dict = Depends(current_user)) -> dict:
+    return controllers.status(device_id)
+
+
+@app.post("/api/devices/{device_id}/controller/power")
+def controller_power(device_id: int, body: PowerBody, _user: dict = Depends(current_user)) -> dict:
+    return {"sent": controllers.power(device_id, body.action)}
+
+
+@app.get("/api/live")
+def live(_user: dict = Depends(current_user)) -> dict:
+    """Which equipment is answering on the network, by device id."""
+    return {"devices": {str(k): v for k, v in monitor.snapshot().items()}}
 
 
 app.mount("/static", StaticFiles(directory=STATIC), name="static")

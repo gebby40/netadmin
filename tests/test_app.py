@@ -11,10 +11,11 @@ from rackmap import __version__
 
 def make_client():
     os.environ["RACKMAP_DATA"] = tempfile.mkdtemp(prefix="rackmap-test-")
-    from rackmap import app as app_module, auth, catalog, consoles, db, discovery, inventory, secrets_store
+    os.environ["RACKMAP_MONITOR"] = "0"  # tests drive the monitor by hand
+    from rackmap import app as app_module, auth, catalog, consoles, controllers, db, discovery, inventory, monitor, secrets_store
 
     db.close()
-    for module in (db, secrets_store, auth, catalog, inventory, discovery, consoles, app_module):
+    for module in (db, secrets_store, auth, catalog, inventory, discovery, consoles, controllers, monitor, app_module):
         importlib.reload(module)
     return TestClient(app_module.app)
 
@@ -285,3 +286,95 @@ def test_console_socket_needs_sign_in():
         with pytest.raises(WebSocketDisconnect):
             with c.websocket_connect("/ws/console/1", headers={"origin": "http://testserver"}):
                 pass
+
+
+def test_management_controller_power_and_console():
+    import json as jsonlib
+    import sqlite3
+
+    from fake_digi import FakeDigi
+    from fake_redfish import FakeRedfish
+    from rackmap import controllers, db
+
+    c = signed_in()
+    origin = {"origin": "http://testserver"}
+    try:
+        with FakeRedfish() as bmc, FakeDigi(username="root", password="bmc-secret") as ssh:
+            controllers.SSH_PORT = ssh.port
+            # the fake listens on a high port; tell the client where
+            real_init = controllers.Redfish.__init__
+            controllers.Redfish.__init__ = lambda self, host, username, password, pinned, port=None: real_init(self, host, username, password, pinned, bmc.port)
+
+            server = c.post("/api/devices", json={"name": "PowerEdge", "u_height": 2, "ip": "10.99.0.5"}).json()
+            assert server["has_controller"] is False
+            url = f"/api/devices/{server['id']}/controller"
+            body = {"host": "127.0.0.1", "username": "root", "console_command": "console com2", "kvm_url": "https://kvm.lan/"}
+
+            # nothing is saved unless rackmap can sign in
+            r = c.put(url, json={**body, "password": "wrong"})
+            assert r.status_code == 422 and "refused" in r.json()["detail"]
+            assert c.get(url).json()["controller"] is None
+            assert c.put(url, json={**body, "password": "bmc-secret", "kvm_url": "javascript:alert(1)"}).status_code == 422
+            assert c.put(url, json={**body, "password": "bmc-secret", "console_command": "console com2; reboot"}).status_code == 422
+
+            saved = c.put(url, json={**body, "password": "bmc-secret"}).json()["controller"]
+            assert saved["has_console"] and "password" not in saved and "secret" not in saved
+            raw = sqlite3.connect(db.DATA_DIR / "rackmap.db").execute("SELECT secret FROM controllers").fetchone()[0]
+            assert "bmc-secret" not in raw
+            assert c.get("/api/overview").json()["unplaced"][0]["has_controller"] is True
+
+            status = c.get(url + "/status").json()
+            assert status["power_state"] == "On" and status["model"] == "PowerEdge R720xd" and status["watts"] == 250
+            assert status["temperatures"] == [{"name": "Inlet Temp", "celsius": 21}]
+            # only the actions this controller offers are listed ("restart" maps to ForceRestart here)
+            assert set(status["actions"]) == {"on", "shutdown", "restart", "off"}
+
+            assert c.post(url + "/power", json={"action": "shutdown"}).json() == {"sent": "GracefulShutdown"}
+            assert c.get(url + "/status").json()["power_state"] == "Off"
+            assert c.post(url + "/power", json={"action": "restart"}).json() == {"sent": "ForceRestart"}
+            assert c.post(url + "/power", json={"action": "explode"}).status_code == 422
+            assert bmc.resets == ["GracefulShutdown", "ForceRestart"]
+
+            # the text console runs in the same kind of terminal as a console-server port
+            with c.websocket_connect(f"/ws/controller/{server['id']}", headers=origin) as ws:
+                assert jsonlib.loads(ws.receive_text())["state"] == "connecting"
+                assert jsonlib.loads(ws.receive_text())["state"] == "open"
+                assert ws.receive_bytes().endswith(b"server login: ")
+                ws.send_text(jsonlib.dumps({"t": "in", "d": "root\r"}))
+                assert ws.receive_bytes() == b"echo:root\r"
+
+            # a different certificate at the same address is refused until the password is re-entered
+            bmc.new_identity()
+            r = c.get(url + "/status")
+            assert r.status_code == 502 and "certificate has changed" in r.json()["detail"]
+            assert c.post(url + "/power", json={"action": "off"}).status_code == 502 and bmc.resets[-1] == "ForceRestart"
+            assert c.put(url, json=body).status_code == 422
+            assert c.put(url, json={**body, "password": "bmc-secret"}).status_code == 200
+            assert c.get(url + "/status").status_code == 200
+
+            # removing the equipment removes its controller record
+            c.delete(f"/api/devices/{server['id']}")
+            assert sqlite3.connect(db.DATA_DIR / "rackmap.db").execute("SELECT count(*) FROM controllers").fetchone()[0] == 0
+    finally:
+        c.__exit__(None, None, None)
+
+
+def test_live_status_only_checks_private_addresses():
+    from rackmap import monitor
+
+    c = signed_in()
+    try:
+        up = c.post("/api/devices", json={"name": "switch", "u_height": 1, "ip": "192.168.7.2"}).json()
+        down = c.post("/api/devices", json={"name": "nas", "u_height": 1, "ip": "192.168.7.3"}).json()
+        c.post("/api/devices", json={"name": "cloud thing", "u_height": 0, "ip": "8.8.8.8"})
+        c.post("/api/devices", json={"name": "no address", "u_height": 0})
+        asked = []
+        monitor.check_all(check=lambda ip: asked.append(ip) or ip.endswith(".2"))
+        assert sorted(asked) == ["192.168.7.2", "192.168.7.3"]  # never a public address
+        live = c.get("/api/live").json()["devices"]
+        assert live[str(up["id"])]["up"] is True and live[str(down["id"])]["up"] is False and len(live) == 2
+        c.delete(f"/api/devices/{down['id']}")
+        monitor.check_all(check=lambda ip: True)
+        assert list(c.get("/api/live").json()["devices"]) == [str(up["id"])]
+    finally:
+        c.__exit__(None, None, None)

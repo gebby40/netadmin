@@ -8,8 +8,8 @@ Self-hosted network and rack manager. It is being built in stages:
 | 2 | Equipment database and an editable rack view with click-for-details | done |
 | 3 | Network discovery that asks where each device sits | done |
 | 4 | Browser terminals through a console server (Digi CM first) | done |
-| 5 | Server panel: power control, text console, slot for a network KVM | next |
-| 6 | Remote access over Tailscale | planned |
+| 5 | Server panel (power, health, text console, KVM link) and live up/down status | done |
+| 6 | Remote access over Tailscale | next |
 
 Nothing about any particular network is built in. Devices, addresses and credentials are
 entered or discovered through the app and stored in its data directory.
@@ -83,6 +83,29 @@ Things to know:
   you put it behind HTTPS or a VPN. Anything typed in a console, including passwords, is only as
   private as that connection.
 - One session per port at a time is the console server's rule, not rackmap's.
+
+## Servers: power, health and text console
+
+Select a server in the rack view and choose Connect controller to attach its management
+controller (Dell iDRAC, HPE iLO, Supermicro or Lenovo BMC, and others that speak Redfish). rackmap
+then shows whether it is powered on, its health, temperatures and power draw, and offers Power
+on, Shut down, Restart and Force off, each behind a confirmation.
+
+- **Text console:** if the controller offers the server's serial console over SSH, enter the
+  command it uses (Dell: `console com2`, HPE: `vsp`) and Open text console gives a terminal.
+  The server must have serial console redirection switched on for this to show anything.
+- **Remote screen:** many controllers only include a graphical remote screen with a paid
+  licence. rackmap does not provide one. If you attach a network KVM, save its web address on
+  the controller and rackmap links to it.
+- The controller's certificate is remembered when it is added; a different certificate later is
+  refused until the password is entered again under Edit controller. The password is stored the
+  same way as console-server passwords.
+
+## Live status
+
+Equipment with a private IP address is checked about once a minute (a ping, then a few common
+ports). The rack view shows a filled dot for answering and a hollow red one for not answering.
+Set `RACKMAP_MONITOR=0` to switch this off.
 
 ## Data
 
