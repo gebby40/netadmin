@@ -231,11 +231,33 @@
     </form>
   </dialog>
 
+  <dialog id="kvm-dialog">
+    <form method="dialog" id="kvm-form" novalidate>
+      <h1 id="kvm-dialog-title">Set up a KVM</h1>
+      <p class="hint">A KVM carries a machine's screen, keyboard and mouse somewhere else. Once one is set up, the rest of your equipment gets a “KVM port” choice.</p>
+      <div class="row">
+        <label>Name<input name="name" maxlength="80" placeholder="Rack KVM"></label>
+        <label>Kind<select name="kind" id="kvm-kind"></select></label>
+      </div>
+      <label>Web address (optional)<input name="url" maxlength="300" autocomplete="off" placeholder="https://192.168.1.70" inputmode="url"></label>
+      <p class="hint">The page you open to see its screens. rackmap links to it as the remote screen; the KVM asks for its own sign-in there. Leave empty for a KVM that isn't on the network.</p>
+      <label>Number of ports<input name="port_count" type="number" min="1" max="64" value="1" inputmode="numeric"></label>
+      <p class="hint">How many machines it can be plugged into. A PiKVM on its own has one.</p>
+      <p class="error" id="kvm-error" role="alert" hidden></p>
+      <div class="buttons">
+        <button type="button" class="danger" id="kvm-delete" hidden>Remove</button>
+        <span class="spacer"></span>
+        <button type="button" class="secondary" data-close>Cancel</button>
+        <button type="submit" class="primary" id="kvm-save">Save</button>
+      </div>
+    </form>
+  </dialog>
+
   <dialog id="controller-dialog">
     <form method="dialog" id="controller-form" novalidate>
       <h1 id="controller-dialog-title">Connect the management controller</h1>
       <p class="hint">Servers have a small built-in computer for management: iDRAC on Dell, iLO on HPE, BMC or IPMI on others. rackmap uses it to show power and health and to switch the server on and off. Its address and password are the controller's own, not the server's.</p>
-      <p class="hint">Not a server? Switches, firewalls and other gear with a serial cable to a console server get a “Console port” choice once a console server is set up.</p>
+      <p class="hint">Not a server? Switches, firewalls and other gear with a serial cable to a console server get a “Console port” choice once a console server is set up, and a “KVM port” choice once a KVM is.</p>
       <label>Controller address<input name="host" maxlength="120" placeholder="192.168.1.60" autocomplete="off" inputmode="url"></label>
       <div class="row">
         <label>Account<input name="username" maxlength="64" autocomplete="off" placeholder="root"></label>
@@ -244,8 +266,7 @@
       <p class="hint" id="controller-pw-note" hidden>Leave the password empty to keep the saved one. Entering it again also accepts the controller's current certificate.</p>
       <label>Text console command (optional)<input name="console_command" maxlength="80" autocomplete="off" placeholder="console com2" spellcheck="false"></label>
       <p class="hint">What the controller's SSH login runs to reach the server's serial console. Dell iDRAC: <code>console com2</code>. HPE iLO: <code>vsp</code>. Leave empty if you don't use it.</p>
-      <label>Network KVM address (optional)<input name="kvm_url" maxlength="300" autocomplete="off" placeholder="https://…" inputmode="url"></label>
-      <p class="hint">If a network KVM is attached to this equipment, its web address goes here and rackmap links to it as the remote screen.</p>
+      <input type="hidden" name="kvm_url">
       <p class="hint">rackmap signs in to check these details before saving. The password is stored encrypted on this rackmap server.</p>
       <p class="error" id="controller-error" role="alert" hidden></p>
       <div class="buttons">

@@ -140,6 +140,25 @@ MIGRATIONS: list[str] = [
     -- A console server can itself be a piece of equipment in the rack.
     ALTER TABLE console_servers ADD COLUMN device_id INTEGER REFERENCES devices(id) ON DELETE SET NULL;
     """,
+    """
+    -- KVMs. Each is a piece of equipment in the rack; `url` is its web page, if it has one.
+    CREATE TABLE kvms (
+        id INTEGER PRIMARY KEY,
+        name TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        url TEXT NOT NULL DEFAULT '',
+        port_count INTEGER NOT NULL,
+        device_id INTEGER REFERENCES devices(id) ON DELETE CASCADE,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE TABLE kvm_ports (
+        id INTEGER PRIMARY KEY,
+        kvm_id INTEGER NOT NULL REFERENCES kvms(id) ON DELETE CASCADE,
+        number INTEGER NOT NULL,
+        device_id INTEGER REFERENCES devices(id) ON DELETE SET NULL,
+        UNIQUE (kvm_id, number)
+    );
+    """,
 ]
 
 _lock = threading.Lock()

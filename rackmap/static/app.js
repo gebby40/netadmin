@@ -4,7 +4,7 @@ const main = document.getElementById("main");
 const bar = document.getElementById("bar");
 const $ = (id) => document.getElementById(id);
 
-const state = { version: "", view: "racks", racks: [], unplaced: [], rackId: null, face: "front", selectedId: null, newFound: 0, live: {}, discovery: null, showIgnored: false, consoles: [], kinds: {}, openPort: null };
+const state = { version: "", view: "racks", racks: [], unplaced: [], rackId: null, face: "front", selectedId: null, newFound: 0, live: {}, discovery: null, showIgnored: false, consoles: [], kinds: {}, kvms: [], kvmKinds: {}, openPort: null };
 
 /* ---------- talking to the server ---------- */
 
@@ -135,6 +135,8 @@ async function reload() {
   state.newFound = overview.new_found || 0;
   state.consoles = overview.console_servers || [];
   state.kinds = overview.console_kinds || {};
+  state.kvms = overview.kvms || [];
+  state.kvmKinds = overview.kvm_kinds || {};
   renderNav();
   if (state.view === "racks" && $("rack-tabs")) render();
 }
@@ -328,7 +330,6 @@ function controllerRows(device, info, status, note, problem) {
   if (info && info.kvm_url) links.push(h("a", { class: "button-link", href: info.kvm_url, target: "_blank", rel: "noopener noreferrer" }, "Open remote screen"));
   links.push(h("button", { type: "button", class: "secondary", onclick: () => openControllerDialog(device, info) }, "Edit controller"));
   rows.push(h("div", { class: "buttons" }, links));
-  if (info && !info.kvm_url) rows.push(h("p", { class: "hint", text: "No remote screen is set up. If you attach a network KVM to this equipment, add its address under Edit controller to open it from here." }));
   return rows;
 }
 
@@ -432,32 +433,136 @@ function consoleSection(device) {
   const choices = state.consoles.flatMap((server) => server.ports
     .filter((port) => !port.device || port.device.id === device.id)
     .map((port) => ({ id: port.id, text: `${server.name} · port ${port.number}${port.label && port.label !== device.name ? ` (${port.label})` : ""}` })));
-  const select = h("select", { id: "device-console-port", "aria-label": "Console port" },
-    h("option", { value: "" }, "Not connected"),
-    ...choices.map((choice) => h("option", { value: String(choice.id) }, choice.text)));
-  select.value = mine.length ? String(mine[0].id) : "";
-  select.addEventListener("change", async () => {
-    select.disabled = true;
-    try {
-      await api(`/api/devices/${device.id}/console-port`, { port_id: select.value ? Number(select.value) : null }, "PUT");
-      await reload();
-    } catch (err) { await failed(err); await reload(); }
-  });
   return h("section", { class: "controller" },
     h("h2", { text: "Console" }),
-    h("label", { class: "inline-choice" }, "Console port", select),
+    portChoice("Console port", "device-console-port", choices, mine.length ? mine[0].id : null, `/api/devices/${device.id}/console-port`),
     mine.length ? h("div", { class: "buttons" }, mine.map((port) =>
       h("button", { type: "button", class: "primary", onclick: () => openConsoleTerminal(port.id) }, mine.length > 1 ? `Open console (port ${port.number})` : "Open console"))) : null);
 }
 
+// A dropdown of free ports that saves as soon as a choice is made.
+function portChoice(label, id, choices, currentId, saveUrl) {
+  const select = h("select", { id, "aria-label": label },
+    h("option", { value: "" }, "Not connected"),
+    ...choices.map((choice) => h("option", { value: String(choice.id) }, choice.text)));
+  select.value = currentId === null ? "" : String(currentId);
+  select.addEventListener("change", async () => {
+    select.disabled = true;
+    try {
+      await api(saveUrl, { port_id: select.value ? Number(select.value) : null }, "PUT");
+      await reload();
+    } catch (err) { await failed(err); await reload(); }
+  });
+  return h("label", { class: "inline-choice" }, label, select);
+}
+
+function kvmPortName(kvm, number) {
+  return kvm.port_count > 1 ? `${kvm.name} · port ${number}` : kvm.name;
+}
+
+function screenLink(url, text) {
+  return h("a", { class: "button-link", href: url, target: "_blank", rel: "noopener noreferrer" }, text);
+}
+
+// KVMs work like console servers: this equipment is a KVM (show what is plugged into it), or a
+// KVM exists (offer its free ports here), or there is none and nothing is shown.
+function kvmSection(device) {
+  const own = state.kvms.find((kvm) => kvm.id === device.kvm_id);
+  if (own) {
+    const used = own.ports.filter((port) => port.device);
+    return h("section", { class: "controller" },
+      h("h2", { text: "KVM" }),
+      h("dl", { class: "facts" },
+        fact("Kind", own.kind_name),
+        fact("Web address", own.url ? h("span", { class: "mono", text: own.url.replace(/^https?:\/\//, "") }) : "Not on the network"),
+        fact("Ports", `${own.port_count}, ${used.length} in use`)),
+      used.length ? h("ul", { class: "port-links" }, used.map((port) => h("li", {},
+        h("button", { type: "button", class: "link", onclick: () => { state.selectedId = port.device.id; render(); } },
+          own.port_count > 1 ? `Port ${port.number}: ${port.device.name}` : port.device.name)))) : null,
+      h("div", { class: "buttons" },
+        own.url ? screenLink(own.url, "Open KVM page") : null,
+        h("button", { type: "button", class: "secondary", onclick: () => openKvmDialog(device, own) }, "Edit KVM")));
+  }
+  if (!state.kvms.length) return "";
+  const mine = device.kvm_ports || [];
+  const choices = state.kvms.flatMap((kvm) => kvm.ports
+    .filter((port) => !port.device || port.device.id === device.id)
+    .map((port) => ({ id: port.id, text: kvmPortName(kvm, port.number) })));
+  const linked = mine.filter((port) => port.url);
+  return h("section", { class: "controller" },
+    h("h2", { text: "Remote screen" }),
+    portChoice("KVM port", "device-kvm-port", choices, mine.length ? mine[0].id : null, `/api/devices/${device.id}/kvm-port`),
+    linked.length ? h("div", { class: "buttons" }, linked.map((port) => screenLink(port.url, "Open remote screen"))) : null,
+    mine.length && !linked.length ? h("p", { class: "hint", text: "This KVM has no web address, so there is nothing to open from here." }) : null,
+    linked.length && linked[0].port_count > 1 ? h("p", { class: "hint", text: `Opens ${linked[0].kvm_name}; choose port ${linked[0].number} there.` }) : null);
+}
+
+let editingKvm = null;
+let kvmDevice = null;
+
+function openKvmDialog(device, kvm) {
+  editingKvm = kvm || null;
+  kvmDevice = device;
+  const form = $("kvm-form");
+  form.reset();
+  $("kvm-kind").replaceChildren(...Object.entries(state.kvmKinds).map(([value, label]) => h("option", { value }, label)));
+  $("kvm-dialog-title").textContent = kvm ? `KVM “${kvm.name}”` : `Set up “${device.name}” as a KVM`;
+  $("kvm-delete").hidden = !kvm;
+  if (kvm) {
+    for (const key of ["name", "kind", "url", "port_count"]) form.elements[key].value = kvm[key];
+  } else {
+    form.elements.name.value = device.name.slice(0, 80);
+    const guess = /pi-?kvm/i.test(device.name) ? "pikvm" : /dell/i.test(`${device.name} ${device.manufacturer}`) ? "dell" : "other";
+    form.elements.kind.value = guess;
+    form.elements.port_count.value = guess === "pikvm" ? 1 : 8;
+    if (device.ip) form.elements.url.value = `https://${device.ip}`;
+  }
+  setError("kvm-error", "");
+  $("kvm-dialog").showModal();
+  form.elements.name.focus();
+}
+
+$("kvm-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = event.target;
+  const body = { name: form.elements.name.value.trim(), kind: form.elements.kind.value, url: form.elements.url.value.trim(),
+    port_count: Number(form.elements.port_count.value), device_id: kvmDevice.id };
+  if (!body.name) return setError("kvm-error", "Give the KVM a name.");
+  if (!(body.port_count >= 1 && body.port_count <= 64)) return setError("kvm-error", "A KVM has between 1 and 64 ports.");
+  $("kvm-save").disabled = true;
+  try {
+    if (editingKvm) await api(`/api/kvms/${editingKvm.id}`, body, "PUT"); else await api("/api/kvms", body);
+    $("kvm-dialog").close("");
+    await reload();
+  } catch (err) {
+    setError("kvm-error", err.message);
+  } finally {
+    $("kvm-save").disabled = false;
+  }
+});
+
+$("kvm-delete").addEventListener("click", async () => {
+  const kvm = editingKvm;
+  $("kvm-dialog").close("");
+  if (!(await confirmDialog(`Remove the KVM set-up for “${kvm.name}”?`, "The equipment stays in the rack; rackmap forgets that it is a KVM and what was plugged into its ports.", "Remove KVM set-up"))) return;
+  try {
+    await api(`/api/kvms/${kvm.id}`, undefined, "DELETE");
+    await reload();
+  } catch (err) { await failed(err); }
+});
+
 // Set-up choices that only apply to some equipment, kept out of the way as plain links.
 function roleLinks(device) {
   const links = [];
-  if (!device.has_controller && device.console_server_id === null) {
+  const plain = device.console_server_id === null && device.kvm_id === null && !device.has_controller;
+  if (!device.has_controller && device.console_server_id === null && device.kvm_id === null) {
     links.push(h("button", { type: "button", class: "link", onclick: () => openControllerDialog(device, null) }, "Set up a server controller (iDRAC, iLO…)"));
   }
-  if (device.console_server_id === null && !(device.console_ports || []).length && !device.has_controller) {
+  if (plain && !(device.console_ports || []).length) {
     links.push(h("button", { type: "button", class: "link", onclick: () => openConsoleDialog(null, device) }, "This is a console server"));
+  }
+  if (plain && !(device.kvm_ports || []).length) {
+    links.push(h("button", { type: "button", class: "link", onclick: () => openKvmDialog(device, null) }, "This is a KVM"));
   }
   return links.length ? h("p", { class: "role-links" }, links) : "";
 }
@@ -491,6 +596,7 @@ function renderDetail() {
       fact("Admin page", adminLink),
       fact("Notes", device.notes && h("span", { class: "notes", text: device.notes }))),
     consoleSection(device),
+    kvmSection(device),
     device.has_controller ? h("section", { class: "controller", id: "controller-panel" }, h("h2", { text: "Management controller" }), h("p", { class: "hint", text: "Asking the controller…" })) : "",
     h("div", { class: "buttons" },
       h("button", { type: "button", class: "secondary", onclick: () => openDeviceDialog(device) }, "Edit"),

@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import __version__, auth, catalog, consoles, controllers, db, discovery, inventory, monitor
+from . import __version__, auth, catalog, consoles, controllers, db, discovery, inventory, kvms, monitor
 
 STATIC = Path(__file__).parent / "static"
 
@@ -203,7 +203,8 @@ def overview(user: dict = Depends(current_user)) -> dict:
     """Everything the rack view draws: racks with their equipment, and equipment not in a rack."""
     new = sum(1 for h in discovery.list_hosts() if not h["ignored"] and not h["device"])
     return {"user": user["name"], "racks": inventory.list_racks(), "unplaced": inventory.unplaced_devices(), "new_found": new,
-            "console_servers": consoles.list_servers(), "console_kinds": consoles.KINDS}
+            "console_servers": consoles.list_servers(), "console_kinds": consoles.KINDS,
+            "kvms": kvms.list_kvms(), "kvm_kinds": kvms.KINDS}
 
 
 @app.post("/api/racks")
@@ -283,6 +284,35 @@ class ConsoleServerBody(BaseModel):
     device_id: int | None = None
 
 
+class KvmBody(BaseModel):
+    name: str = Field(max_length=80)
+    kind: str = Field(default="other", max_length=20)
+    url: str = Field(default="", max_length=300)
+    port_count: int = Field(ge=1, le=kvms.MAX_PORTS)
+    device_id: int
+
+
+@app.exception_handler(kvms.Invalid)
+async def invalid_kvm(_request: Request, exc: kvms.Invalid) -> JSONResponse:
+    return JSONResponse(status_code=422, content={"detail": str(exc)})
+
+
+@app.post("/api/kvms")
+def kvm_create(body: KvmBody, _user: dict = Depends(current_user)) -> dict:
+    return kvms.save(body.model_dump())
+
+
+@app.put("/api/kvms/{kvm_id}")
+def kvm_update(kvm_id: int, body: KvmBody, _user: dict = Depends(current_user)) -> dict:
+    return kvms.save(body.model_dump(), kvm_id)
+
+
+@app.delete("/api/kvms/{kvm_id}")
+def kvm_delete(kvm_id: int, _user: dict = Depends(current_user)) -> dict:
+    kvms.delete(kvm_id)
+    return {"ok": True}
+
+
 class DevicePortBody(BaseModel):
     port_id: int | None = None
 
@@ -321,6 +351,12 @@ def consoles_delete(server_id: int, _user: dict = Depends(current_user)) -> dict
 @app.put("/api/devices/{device_id}/console-port")
 def device_console_port(device_id: int, body: DevicePortBody, _user: dict = Depends(current_user)) -> dict:
     consoles.set_device_port(device_id, body.port_id)
+    return {"ok": True}
+
+
+@app.put("/api/devices/{device_id}/kvm-port")
+def device_kvm_port(device_id: int, body: DevicePortBody, _user: dict = Depends(current_user)) -> dict:
+    kvms.set_device_port(device_id, body.port_id)
     return {"ok": True}
 
 

@@ -13,12 +13,11 @@ afterwards a different key is refused until someone re-saves the console server.
 from __future__ import annotations
 
 import asyncio
-import ipaddress
 import re
 
 import asyncssh
 
-from . import db, secrets_store
+from . import addresses, db, secrets_store
 
 KINDS = {"digi-cm": "Digi CM / Passport"}
 MAX_PORTS = 96
@@ -88,11 +87,8 @@ def _clean(values: dict) -> dict:
         raise Invalid("Give the console server a name.")
     if not host or not re.fullmatch(r"[A-Za-z0-9.\-:]+", host):
         raise Invalid("Enter the console server's address, for example 192.168.1.50.")
-    try:
-        if not ipaddress.ip_address(host).is_private:
-            raise Invalid("The console server's address must be on a private network.")
-    except ValueError:
-        pass  # a host name; it is resolved when connecting
+    if addresses.is_public_ip(host):
+        raise Invalid("The console server's address must be on a private network.")
     if not username:
         raise Invalid("Enter the account rackmap signs in with.")
     port = int(values.get("port") or 22)

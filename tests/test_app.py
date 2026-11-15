@@ -216,7 +216,8 @@ def test_console_server_sessions_and_secrets():
             assert r.status_code == 422 and "refused" in r.json()["detail"]
             assert c.get("/api/consoles").json()["servers"] == []
             # public addresses are not accepted
-            assert c.post("/api/consoles", json={**body, "host": "8.8.8.8", "password": "x"}).status_code == 422
+            r = c.post("/api/consoles", json={**body, "host": "8.8.8.8", "password": "x"})
+            assert r.status_code == 422 and "private network" in r.json()["detail"]  # refused before any connection is tried
 
             server = c.post("/api/consoles", json={**body, "password": "digi-secret"}).json()
             assert [p["number"] for p in server["ports"]] == [1, 2, 3, 4] and server["host_key_fingerprint"].startswith("SHA256:")
@@ -313,6 +314,8 @@ def test_management_controller_power_and_console():
             url = f"/api/devices/{server['id']}/controller"
             body = {"host": "127.0.0.1", "username": "root", "console_command": "console com2", "kvm_url": "https://kvm.lan/"}
 
+            r = c.put(url, json={**body, "host": "8.8.8.8", "password": "x"})
+            assert r.status_code == 422 and "private network" in r.json()["detail"]
             # nothing is saved unless rackmap can sign in
             r = c.put(url, json={**body, "password": "wrong"})
             assert r.status_code == 422 and "refused" in r.json()["detail"]
@@ -464,5 +467,47 @@ def test_console_server_as_equipment_offers_its_ports_to_the_rest():
             # deleting the equipment keeps the console server, just no longer tied to it
             assert c.delete(f"/api/devices/{digi_box['id']}").status_code == 200
             assert c.get("/api/consoles").json()["servers"][0]["device_id"] is None
+    finally:
+        c.__exit__(None, None, None)
+
+
+def test_kvm_as_equipment_offers_its_ports_to_the_rest():
+    c = signed_in()
+    try:
+        kvm_box = c.post("/api/devices", json={"name": "Dell KVM", "u_height": 1}).json()
+        server = c.post("/api/devices", json={"name": "Server", "u_height": 2}).json()
+        other = c.post("/api/devices", json={"name": "Other", "u_height": 1}).json()
+        assert kvm_box["kvm_id"] is None and server["kvm_ports"] == []
+        assert c.get("/api/overview").json()["kvms"] == []
+
+        body = {"name": "Dell KVM", "kind": "dell", "url": "10.3.0.40", "port_count": 8, "device_id": kvm_box["id"]}
+        assert c.post("/api/kvms", json={**body, "url": "javascript:alert(1)"}).status_code == 422
+        assert c.post("/api/kvms", json={**body, "url": "https://8.8.8.8"}).status_code == 422
+        assert c.post("/api/kvms", json={**body, "kind": "nope"}).status_code == 422
+        assert c.post("/api/kvms", json={**body, "device_id": 9999}).status_code == 422
+        kvm = c.post("/api/kvms", json=body).json()
+        assert kvm["url"] == "https://10.3.0.40" and len(kvm["ports"]) == 8 and kvm["kind_name"] == "Dell KVM switch"
+        assert c.post("/api/kvms", json=body).status_code == 422  # one KVM per piece of equipment
+        assert c.post("/api/kvms", json={**body, "url": "", "device_id": other["id"], "port_count": 1}).json()["url"] == ""  # not on the network
+
+        port1, port2 = kvm["ports"][0]["id"], kvm["ports"][1]["id"]
+        url = f"/api/devices/{server['id']}/kvm-port"
+        assert c.put(url, json={"port_id": port1}).status_code == 200
+        by_name = {d["name"]: d for d in c.get("/api/overview").json()["unplaced"]}
+        assert by_name["Dell KVM"]["kvm_id"] == kvm["id"]
+        assert by_name["Server"]["kvm_ports"][0]["number"] == 1 and by_name["Server"]["kvm_ports"][0]["url"] == "https://10.3.0.40"
+        assert c.put(f"/api/devices/{kvm_box['id']}/kvm-port", json={"port_id": port2}).status_code == 422  # not into itself
+        spare = c.post("/api/devices", json={"name": "Spare", "u_height": 1}).json()
+        assert c.put(f"/api/devices/{spare['id']}/kvm-port", json={"port_id": port1}).status_code == 422  # port taken
+        assert c.put(url, json={"port_id": port2}).status_code == 200  # moving frees the first
+        ports = c.get("/api/overview").json()["kvms"][0]["ports"]
+        assert ports[0]["device"] is None and ports[1]["device"]["id"] == server["id"]
+
+        # fewer ports drops the ones that go; removing the equipment removes its KVM set-up
+        assert len(c.put(f"/api/kvms/{kvm['id']}", json={**body, "port_count": 1}).json()["ports"]) == 1
+        assert {d["name"]: d for d in c.get("/api/overview").json()["unplaced"]}["Server"]["kvm_ports"] == []
+        assert c.delete(f"/api/devices/{kvm_box['id']}").status_code == 200
+        assert [k["name"] for k in c.get("/api/overview").json()["kvms"]] == ["Dell KVM"]  # only the one on "Other" is left
+        assert c.get("/api/overview").json()["kvms"][0]["device_id"] == other["id"]
     finally:
         c.__exit__(None, None, None)

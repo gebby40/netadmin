@@ -7,7 +7,7 @@ both faces of the units it occupies; a half-depth device blocks only its own fac
 
 from __future__ import annotations
 
-from . import catalog, db
+from . import catalog, db, kvms
 
 MAX_RACK_U = 60
 DEVICE_FIELDS = ("name", "type_slug", "manufacturer", "model", "u_height", "full_depth", "rack_id",
@@ -28,6 +28,8 @@ def _device(r) -> dict:
         "WHERE p.device_id = ? ORDER BY s.name, p.number", (d["id"],))]
     servers = db.query("SELECT id FROM console_servers WHERE device_id = ?", (d["id"],))
     d["console_server_id"] = servers[0]["id"] if servers else None
+    d["kvm_id"] = kvms.id_for_device(d["id"])
+    d["kvm_ports"] = kvms.ports_for_device(d["id"])
     d["has_controller"] = bool(db.query("SELECT 1 FROM controllers WHERE device_id = ?", (d["id"],)))
     return d
 

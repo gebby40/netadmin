@@ -16,7 +16,6 @@ import asyncio
 import base64
 import hashlib
 import http.client
-import ipaddress
 import json
 import re
 import socket
@@ -24,7 +23,7 @@ import ssl
 import threading
 import time
 
-from . import consoles, db, secrets_store
+from . import addresses, consoles, db, secrets_store
 
 KINDS = {"redfish": "Redfish (Dell iDRAC, HPE iLO, Supermicro, Lenovo XCC…)"}
 TIMEOUT = 15
@@ -239,11 +238,8 @@ def save(device_id: int, values: dict) -> dict:
     kvm_url = str(values.get("kvm_url") or "").strip()
     if not host or not re.fullmatch(r"[A-Za-z0-9.\-]+", host):
         raise Invalid("Enter the controller's address, for example 192.168.1.60.")
-    try:
-        if not ipaddress.ip_address(host).is_private:
-            raise Invalid("The controller's address must be on a private network.")
-    except ValueError:
-        pass
+    if addresses.is_public_ip(host):
+        raise Invalid("The controller's address must be on a private network.")
     if not username:
         raise Invalid("Enter the account rackmap signs in with.")
     if console_command and not re.fullmatch(r"[A-Za-z0-9 _./:\-]{1,80}", console_command):
