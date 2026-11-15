@@ -161,13 +161,35 @@ def update_port(port_id: int, label: str, device_id: int | None) -> None:
 
 # ---------- live sessions ----------
 
+class _PasswordClient(asyncssh.SSHClient):
+    """Answers password sign-in, and any follow-up keyboard-interactive step, with the one password.
+
+    Some devices (Dell iDRAC among them) accept the password and then insist on a second,
+    keyboard-interactive round, usually with no questions at all. asyncssh's built-in handling
+    gives up at that point because it has already used the password once.
+    """
+
+    def __init__(self, password: str):
+        self._password = password
+
+    def password_auth_requested(self) -> str:
+        return self._password
+
+    def kbdint_auth_requested(self) -> str:
+        return ""
+
+    def kbdint_challenge_received(self, name, instructions, lang, prompts):
+        return [self._password for _ in prompts]
+
+
 async def _connect(host: str, port: int, username: str, password: str, trusted_key: str | None) -> asyncssh.SSHClientConnection:
     known = None
     if trusted_key:
         known = ([asyncssh.import_public_key(trusted_key)], [], [])
     try:
         return await asyncio.wait_for(
-            asyncssh.connect(host, port=port, username=username, password=password, known_hosts=known, client_keys=None,
+            asyncssh.connect(host, port=port, username=username, client_factory=lambda: _PasswordClient(password),
+                             known_hosts=known, client_keys=None,
                              agent_path=None, config=None, preferred_auth=["password", "keyboard-interactive"],
                              keepalive_interval=30, **_SSH_ALGS),
             timeout=CONNECT_TIMEOUT)
