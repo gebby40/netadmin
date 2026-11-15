@@ -407,7 +407,7 @@ function renderDetail() {
       fact("Notes", device.notes && h("span", { class: "notes", text: device.notes }))),
     (device.console_ports || []).length ? h("div", { class: "buttons console-links" },
       device.console_ports.map((port) => h("button", { type: "button", class: "primary", onclick: () => { state.view = "consoles"; state.openPort = port.id; showView(); } },
-        device.console_ports.length > 1 ? `Open console (port ${port.number})` : "Open console"))) :: "",
+        device.console_ports.length > 1 ? `Open console (port ${port.number})` : "Open console"))) : "",
     device.has_controller ? h("section", { class: "controller", id: "controller-panel" }, h("h2", { text: "Management controller" }), h("p", { class: "hint", text: "Asking the controller…" })) : "",
     h("div", { class: "buttons" },
       h("button", { type: "button", class: "secondary", onclick: () => openDeviceDialog(device) }, "Edit"),
