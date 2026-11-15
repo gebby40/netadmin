@@ -95,6 +95,31 @@ MIGRATIONS: list[str] = [
         last_seen TEXT NOT NULL DEFAULT (datetime('now'))
     );
     """,
+    """
+    -- Console servers and their serial ports. `secret` is the sign-in password, encrypted
+    -- with the key in secret.key; `host_key` is the SSH host key remembered on first use.
+    CREATE TABLE console_servers (
+        id INTEGER PRIMARY KEY,
+        name TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        host TEXT NOT NULL,
+        port INTEGER NOT NULL DEFAULT 22,
+        username TEXT NOT NULL,
+        secret TEXT NOT NULL,
+        host_key TEXT NOT NULL,
+        host_key_fingerprint TEXT NOT NULL,
+        port_count INTEGER NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE TABLE console_ports (
+        id INTEGER PRIMARY KEY,
+        server_id INTEGER NOT NULL REFERENCES console_servers(id) ON DELETE CASCADE,
+        number INTEGER NOT NULL,
+        label TEXT NOT NULL DEFAULT '',
+        device_id INTEGER REFERENCES devices(id) ON DELETE SET NULL,
+        UNIQUE (server_id, number)
+    );
+    """,
 ]
 
 _lock = threading.Lock()

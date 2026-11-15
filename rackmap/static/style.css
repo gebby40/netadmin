@@ -499,3 +499,42 @@ progress { width: 100%; height: 8px; accent-color: var(--accent); }
 .host-says { overflow-wrap: anywhere; }
 .host-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .muted { color: var(--muted); }
+
+/* ---------- consoles ---------- */
+
+.consoles { display: grid; gap: 20px; }
+.console-server .rack-head { align-items: flex-start; }
+
+.ports { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); }
+
+.port { display: flex; align-items: stretch; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--bg); }
+.port.open { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+
+.port-open {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: none;
+  border: 0;
+  padding: 8px 10px;
+  min-height: 48px;
+  color: var(--ink);
+  text-align: left;
+}
+
+.port-open:hover { background: var(--surface); }
+.port-number { font: 600 0.95rem/1 var(--mono); min-width: 2ch; text-align: right; color: var(--muted); }
+.port-label { font-size: 0.9rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.port-edit { padding: 0 10px; font-size: 0.8rem; color: var(--muted); border-left: 1px solid var(--line); min-width: 44px; }
+
+.term-card { padding: 16px; }
+.term-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+.term-head h1 { margin: 0; font-size: 1.1rem; overflow-wrap: anywhere; }
+.term-head .hint { margin: 2px 0 0; }
+
+.term { height: min(62vh, 640px); min-height: 260px; background: #0e1110; border-radius: 8px; padding: 8px; overflow: hidden; }
+.term .xterm { height: 100%; }
+
+.console-links { margin-bottom: 12px; }

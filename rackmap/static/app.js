@@ -4,7 +4,7 @@ const main = document.getElementById("main");
 const bar = document.getElementById("bar");
 const $ = (id) => document.getElementById(id);
 
-const state = { version: "", view: "racks", racks: [], unplaced: [], rackId: null, face: "front", selectedId: null, newFound: 0, discovery: null, showIgnored: false };
+const state = { version: "", view: "racks", racks: [], unplaced: [], rackId: null, face: "front", selectedId: null, newFound: 0, discovery: null, showIgnored: false, consoles: [], kinds: {}, openPort: null };
 
 /* ---------- talking to the server ---------- */
 
@@ -142,6 +142,8 @@ function renderNav() {
   $("nav-discovery").toggleAttribute("aria-current", state.view === "discovery");
   if (state.view === "racks") $("nav-racks").setAttribute("aria-current", "page");
   if (state.view === "discovery") $("nav-discovery").setAttribute("aria-current", "page");
+  $("nav-consoles").toggleAttribute("aria-current", state.view === "consoles");
+  if (state.view === "consoles") $("nav-consoles").setAttribute("aria-current", "page");
   const badge = $("nav-badge");
   badge.hidden = state.newFound === 0;
   badge.textContent = state.newFound;
@@ -274,6 +276,9 @@ function renderDetail() {
       fact("Serial number", device.serial && h("span", { class: "mono", text: device.serial })),
       fact("Admin page", adminLink),
       fact("Notes", device.notes && h("span", { class: "notes", text: device.notes }))),
+    (device.console_ports || []).length ? h("div", { class: "buttons console-links" },
+      device.console_ports.map((port) => h("button", { type: "button", class: "primary", onclick: () => { state.view = "consoles"; state.openPort = port.id; showView(); } },
+        device.console_ports.length > 1 ? `Open console (port ${port.number})` : "Open console"))) : null,
     h("div", { class: "buttons" },
       h("button", { type: "button", class: "secondary", onclick: () => openDeviceDialog(device) }, "Edit"),
       placed ? h("button", { type: "button", class: "secondary", onclick: () => takeOut(device) }, "Take out of rack") : null,
@@ -711,6 +716,206 @@ function discoveryScreen() {
   });
 }
 
+/* ---------- consoles ---------- */
+
+let terminal = null;
+let fitAddon = null;
+let socket = null;
+let editingConsole = null;
+let editingPort = null;
+
+function allDevices() {
+  return [...state.racks.flatMap((r) => r.devices), ...state.unplaced].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function findPort(portId) {
+  for (const server of state.consoles) {
+    const port = server.ports.find((p) => p.id === portId);
+    if (port) return { server, port };
+  }
+  return null;
+}
+
+function portName(port) {
+  return port.label || (port.device ? port.device.name : "");
+}
+
+function closeTerminal() {
+  if (socket) { socket.onclose = null; socket.onmessage = null; try { socket.close(); } catch (err) { /* already closed */ } socket = null; }
+  if (terminal) { terminal.dispose(); terminal = null; fitAddon = null; }
+  state.openPort = null;
+  const card = $("term-card");
+  if (card) card.hidden = true;
+}
+
+function setTermStatus(text, canReconnect) {
+  if (!$("term-status")) return;
+  $("term-status").textContent = text;
+  $("term-reconnect").hidden = !canReconnect;
+}
+
+function openTerminal(portId) {
+  const found = findPort(portId);
+  if (!found) return;
+  closeTerminal();
+  state.openPort = portId;
+  $("term-card").hidden = false;
+  const name = portName(found.port);
+  $("term-title").textContent = `${found.server.name} · port ${found.port.number}${name ? ` · ${name}` : ""}`;
+  setTermStatus("Connecting…", false);
+  terminal = new Terminal({ cursorBlink: true, convertEol: false, scrollback: 5000, fontSize: 14,
+    fontFamily: 'ui-monospace, "SF Mono", Menlo, Consolas, monospace', theme: { background: "#0e1110", foreground: "#e8ece9", cursor: "#4fc3a6" } });
+  fitAddon = new FitAddon.FitAddon();
+  terminal.loadAddon(fitAddon);
+  terminal.open($("term"));
+  fitAddon.fit();
+  const scheme = location.protocol === "https:" ? "wss" : "ws";
+  const ws = new WebSocket(`${scheme}://${location.host}/ws/console/${portId}`);
+  ws.binaryType = "arraybuffer";
+  socket = ws;
+  const send = (message) => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(message)); };
+  terminal.onData((data) => send({ t: "in", d: data }));
+  terminal.onResize(({ cols, rows }) => send({ t: "size", cols, rows }));
+  let ended = false;
+  ws.onmessage = (event) => {
+    if (typeof event.data !== "string") { terminal.write(new Uint8Array(event.data)); return; }
+    const note = JSON.parse(event.data);
+    if (note.state === "open") {
+      setTermStatus("Connected. Press Enter if the screen is blank.", false);
+      send({ t: "size", cols: terminal.cols, rows: terminal.rows });
+      terminal.focus();
+    } else if (note.state === "failed" || note.state === "closed") {
+      ended = true;
+      setTermStatus(note.message || "Disconnected.", true);
+    }
+  };
+  ws.onclose = (event) => {
+    if (ended) return;
+    setTermStatus(event.code === 4401 ? "Your sign-in has expired. Sign in again to use the console." : "The connection to rackmap was lost.", true);
+  };
+  $("term-card").scrollIntoView({ block: "start", behavior: "smooth" });
+}
+
+window.addEventListener("resize", () => { if (fitAddon && state.view === "consoles") { try { fitAddon.fit(); } catch (err) { /* not laid out yet */ } } });
+
+function renderConsoles() {
+  if (state.view !== "consoles" || !$("console-servers")) return;
+  $("no-consoles").hidden = state.consoles.length > 0;
+  $("console-actions").hidden = state.consoles.length === 0;
+  $("console-servers").replaceChildren(...state.consoles.map((server) => h("section", { class: "card console-server" },
+    h("div", { class: "rack-head" },
+      h("div", {},
+        h("h1", { text: server.name }),
+        h("p", { class: "hint", text: `${server.kind_name} · ${server.host}${server.port === 22 ? "" : `:${server.port}`} · ${server.port_count} ports` })),
+      h("button", { type: "button", class: "link", onclick: () => openConsoleDialog(server) }, "Edit")),
+    h("ul", { class: "ports" }, server.ports.map((port) => h("li", { class: port.id === state.openPort ? "port open" : "port" },
+      h("button", { type: "button", class: "port-open", onclick: () => openTerminal(port.id), "aria-label": `Open port ${port.number}${portName(port) ? `, ${portName(port)}` : ""}` },
+        h("span", { class: "port-number", text: String(port.number) }),
+        h("span", { class: "port-label", text: portName(port) || "Not labelled" })),
+      h("button", { type: "button", class: "link port-edit", onclick: () => openPortDialog(server, port), "aria-label": `Label port ${port.number}` }, "Label")))))));
+}
+
+async function loadConsoles() {
+  const view = await api("/api/consoles");
+  state.consoles = view.servers;
+  state.kinds = view.kinds;
+  renderConsoles();
+}
+
+function openConsoleDialog(server) {
+  editingConsole = server || null;
+  const form = $("console-form");
+  form.reset();
+  $("console-kind").replaceChildren(...Object.entries(state.kinds).map(([value, label]) => h("option", { value }, label)));
+  $("console-dialog-title").textContent = server ? "Edit console server" : "Connect a console server";
+  $("console-save").textContent = server ? "Save" : "Connect";
+  $("console-delete").hidden = !server;
+  $("console-pw-note").hidden = !server;
+  if (server) {
+    for (const key of ["name", "kind", "host", "port", "username", "port_count"]) form.elements[key].value = server[key];
+  }
+  setError("console-error", "");
+  $("console-dialog").showModal();
+  form.elements.name.focus();
+}
+
+$("console-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = event.target;
+  const body = { name: form.elements.name.value.trim(), kind: form.elements.kind.value, host: form.elements.host.value.trim(),
+    port: Number(form.elements.port.value) || 22, username: form.elements.username.value.trim(), password: form.elements.password.value,
+    port_count: Number(form.elements.port_count.value) };
+  if (!body.name) return setError("console-error", "Give the console server a name.");
+  if (!body.host) return setError("console-error", "Enter the console server's address.");
+  if (!body.username) return setError("console-error", "Enter the account rackmap signs in with.");
+  if (!editingConsole && !body.password) return setError("console-error", "Enter the password for that account.");
+  if (!(body.port_count >= 1 && body.port_count <= 96)) return setError("console-error", "A console server has between 1 and 96 serial ports.");
+  const button = $("console-save");
+  button.disabled = true;
+  button.textContent = "Signing in to check…";
+  try {
+    if (editingConsole) await api(`/api/consoles/${editingConsole.id}`, body, "PUT"); else await api("/api/consoles", body);
+    $("console-dialog").close("");
+    await loadConsoles();
+  } catch (err) {
+    setError("console-error", err.message);
+  } finally {
+    button.disabled = false;
+    button.textContent = editingConsole ? "Save" : "Connect";
+  }
+});
+
+$("console-delete").addEventListener("click", async () => {
+  const server = editingConsole;
+  $("console-dialog").close("");
+  if (!(await confirmDialog(`Remove “${server.name}”?`, "Its port labels and saved password are deleted from rackmap. The console server itself isn't changed.", "Remove console server"))) return;
+  try {
+    if (state.openPort !== null && server.ports.some((p) => p.id === state.openPort)) closeTerminal();
+    await api(`/api/consoles/${server.id}`, undefined, "DELETE");
+    await loadConsoles();
+    await reload();
+  } catch (err) { await failed(err); }
+});
+
+function openPortDialog(server, port) {
+  editingPort = port;
+  const form = $("port-form");
+  form.reset();
+  $("port-dialog-title").textContent = `${server.name} · port ${port.number}`;
+  $("port-device").replaceChildren(h("option", { value: "" }, "Not tied to equipment"),
+    ...allDevices().map((device) => h("option", { value: String(device.id) }, device.name)));
+  form.elements.label.value = port.label;
+  form.elements.device_id.value = port.device ? String(port.device.id) : "";
+  setError("port-error", "");
+  $("port-dialog").showModal();
+  form.elements.label.focus();
+}
+
+$("port-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = event.target;
+  $("port-save").disabled = true;
+  try {
+    await api(`/api/consoles/ports/${editingPort.id}`, { label: form.elements.label.value.trim(), device_id: form.elements.device_id.value ? Number(form.elements.device_id.value) : null }, "PUT");
+    $("port-dialog").close("");
+    await loadConsoles();
+    await reload();
+  } catch (err) {
+    setError("port-error", err.message);
+  } finally {
+    $("port-save").disabled = false;
+  }
+});
+
+function consolesScreen() {
+  show("t-consoles");
+  $("version").textContent = state.version;
+  $("add-first-console").addEventListener("click", () => openConsoleDialog(null));
+  $("add-console").addEventListener("click", () => openConsoleDialog(null));
+  $("term-close").addEventListener("click", () => { closeTerminal(); renderConsoles(); });
+  $("term-reconnect").addEventListener("click", () => { const id = state.openPort; if (id !== null) { openTerminal(id); renderConsoles(); } });
+}
+
 /* ---------- start-up ---------- */
 
 function racksScreen() {
@@ -727,11 +932,17 @@ function racksScreen() {
 async function showView() {
   bar.hidden = false;
   clearTimeout(scanTimer);
+  if (state.view !== "consoles" || !$("term-card")) { const keep = state.view === "consoles" ? state.openPort : null; closeTerminal(); state.openPort = keep; }
   renderNav();
   try {
     if (state.view === "discovery") {
       discoveryScreen();
       await loadDiscovery(true);
+    } else if (state.view === "consoles") {
+      const wanted = state.openPort;
+      consolesScreen();
+      await loadConsoles();
+      if (wanted !== null) { openTerminal(wanted); renderConsoles(); }
     } else {
       racksScreen();
       render();
@@ -744,6 +955,7 @@ async function showView() {
 
 $("nav-racks").addEventListener("click", () => { state.view = "racks"; showView(); });
 $("nav-discovery").addEventListener("click", () => { state.view = "discovery"; showView(); });
+$("nav-consoles").addEventListener("click", () => { if (state.view !== "consoles") { state.view = "consoles"; showView(); } });
 
 async function start() {
   let status;
@@ -767,6 +979,7 @@ async function start() {
 }
 
 $("sign-out").addEventListener("click", async () => {
+  closeTerminal();
   try { await api("/api/logout", {}); } catch (err) { /* signed out either way */ }
   await start();
 });

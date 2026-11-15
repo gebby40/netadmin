@@ -11,10 +11,10 @@ from rackmap import __version__
 
 def make_client():
     os.environ["RACKMAP_DATA"] = tempfile.mkdtemp(prefix="rackmap-test-")
-    from rackmap import app as app_module, auth, catalog, db, discovery, inventory
+    from rackmap import app as app_module, auth, catalog, consoles, db, discovery, inventory, secrets_store
 
     db.close()
-    for module in (db, auth, catalog, inventory, discovery, app_module):
+    for module in (db, secrets_store, auth, catalog, inventory, discovery, consoles, app_module):
         importlib.reload(module)
     return TestClient(app_module.app)
 
@@ -193,3 +193,95 @@ def test_discovery_scan_review_and_add():
         assert len(again) == 3 and {h["ip"]: h for h in again}["192.168.50.1"]["mac"] == "48:a9:8a:29:e7:5c"
     finally:
         c.__exit__(None, None, None)
+
+
+def test_console_server_sessions_and_secrets():
+    import json as jsonlib
+    import sqlite3
+
+    from fake_digi import FakeDigi
+    from rackmap import db
+
+    c = signed_in()
+    origin = {"origin": "http://testserver"}
+    try:
+        with FakeDigi(busy_ports={3}) as digi:
+            body = {"name": "Rack console", "host": "127.0.0.1", "port": digi.port, "username": "root", "port_count": 4}
+            # wrong password: nothing is saved, and the reason is readable
+            r = c.post("/api/consoles", json={**body, "password": "nope"})
+            assert r.status_code == 422 and "refused" in r.json()["detail"]
+            assert c.get("/api/consoles").json()["servers"] == []
+            # public addresses are not accepted
+            assert c.post("/api/consoles", json={**body, "host": "8.8.8.8", "password": "x"}).status_code == 422
+
+            server = c.post("/api/consoles", json={**body, "password": "digi-secret"}).json()
+            assert [p["number"] for p in server["ports"]] == [1, 2, 3, 4] and server["host_key_fingerprint"].startswith("SHA256:")
+            # the password never comes back, and is not readable in the database file
+            listing = c.get("/api/consoles").text
+            assert "digi-secret" not in listing and "secret" not in server
+            raw = sqlite3.connect(db.DATA_DIR / "rackmap.db").execute("SELECT secret FROM console_servers").fetchone()[0]
+            assert "digi-secret" not in raw and (db.DATA_DIR / "secret.key").stat().st_mode & 0o077 == 0
+
+            # label a port and tie it to a piece of equipment
+            device = c.post("/api/devices", json={"name": "Core switch", "u_height": 1}).json()
+            port1 = server["ports"][0]
+            assert c.put(f"/api/consoles/ports/{port1['id']}", json={"label": "core", "device_id": device["id"]}).status_code == 200
+            over = c.get("/api/overview").json()
+            assert over["unplaced"][0]["console_ports"][0]["number"] == 1
+
+            # a console needs a signed-in browser on rackmap's own page
+            import pytest
+            from starlette.websockets import WebSocketDisconnect
+            with pytest.raises(WebSocketDisconnect):
+                with c.websocket_connect(f"/ws/console/{port1['id']}", headers={"origin": "http://evil.example"}):
+                    pass
+
+            with c.websocket_connect(f"/ws/console/{port1['id']}", headers=origin) as ws:
+                assert jsonlib.loads(ws.receive_text())["state"] == "connecting"
+                assert jsonlib.loads(ws.receive_text())["state"] == "open"
+                first = ws.receive_bytes()
+                # the sign-in exchange is not shown; the device's own output is
+                assert first == b"device-on-port-1 login: " and b"Password" not in first
+                ws.send_text(jsonlib.dumps({"t": "size", "cols": 120, "rows": 40}))
+                ws.send_text(jsonlib.dumps({"t": "in", "d": "hello\r"}))
+                assert ws.receive_bytes() == b"echo:hello\r"
+                ws.send_text(jsonlib.dumps({"t": "in", "d": "\u0004"}))  # device hangs up
+                assert jsonlib.loads(ws.receive_text())["state"] == "closed"
+
+            # a port someone else is using says so
+            with c.websocket_connect(f"/ws/console/{server['ports'][2]['id']}", headers=origin) as ws:
+                ws.receive_text()
+                failed = jsonlib.loads(ws.receive_text())
+                assert failed["state"] == "failed" and "in use" in failed["message"]
+
+            # editing without a password keeps the saved one; shrinking drops the extra ports
+            edited = c.put(f"/api/consoles/{server['id']}", json={**body, "name": "Renamed", "port_count": 2}).json()
+            assert edited["name"] == "Renamed" and len(edited["ports"]) == 2 and edited["ports"][0]["label"] == "core"
+
+            # a changed host key is refused until the password is entered again
+            digi.new_identity()
+            with c.websocket_connect(f"/ws/console/{port1['id']}", headers=origin) as ws:
+                ws.receive_text()
+                failed = jsonlib.loads(ws.receive_text())
+                assert failed["state"] == "failed" and "identity" in failed["message"]
+            assert c.put(f"/api/consoles/{server['id']}", json={**body, "port_count": 2}).status_code == 422
+            relearned = c.put(f"/api/consoles/{server['id']}", json={**body, "port_count": 2, "password": "digi-secret"}).json()
+            assert relearned["host_key_fingerprint"] != server["host_key_fingerprint"]
+
+            # deleting the equipment unties the port; deleting the server removes its ports
+            c.delete(f"/api/devices/{device['id']}")
+            assert c.get("/api/consoles").json()["servers"][0]["ports"][0]["device"] is None
+            assert c.delete(f"/api/consoles/{server['id']}").status_code == 200
+            assert c.get("/api/consoles").json()["servers"] == []
+    finally:
+        c.__exit__(None, None, None)
+
+
+def test_console_socket_needs_sign_in():
+    import pytest
+    from starlette.websockets import WebSocketDisconnect
+
+    with make_client() as c:
+        with pytest.raises(WebSocketDisconnect):
+            with c.websocket_connect("/ws/console/1", headers={"origin": "http://testserver"}):
+                pass

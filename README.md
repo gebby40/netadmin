@@ -7,8 +7,8 @@ Self-hosted network and rack manager. It is being built in stages:
 | 1 | Runs, first-run administrator account, sign-in | done |
 | 2 | Equipment database and an editable rack view with click-for-details | done |
 | 3 | Network discovery that asks where each device sits | done |
-| 4 | Browser terminals through a console server (Digi CM first) | next |
-| 5 | Server panel: power control, text console, slot for a network KVM | planned |
+| 4 | Browser terminals through a console server (Digi CM first) | done |
+| 5 | Server panel: power control, text console, slot for a network KVM | next |
 | 6 | Remote access over Tailscale | planned |
 
 Nothing about any particular network is built in. Devices, addresses and credentials are
@@ -63,10 +63,32 @@ and community under "Ask the router".
 rackmap refuses to scan public address ranges, and more than 4,096 addresses in one scan.
 Run it on a machine that is allowed to reach the networks you want scanned.
 
+## Consoles
+
+On the Consoles page, connect a console server by giving its address and the account rackmap
+should sign in with. rackmap signs in once to check the details, remembers the server's SSH
+host key, and lists its serial ports. Click a port for a terminal in the browser; label ports
+and tie them to equipment so the rack view gets an Open console button.
+
+Supported so far: the Digi CM / Passport family, over SSH (`connect <port>`). Old models that
+only offer old SSH algorithms are handled.
+
+Things to know:
+
+- The console server's password is stored encrypted in the database, with the key in
+  `secret.key` beside it. That protects a stray copy of the database, not the whole data directory.
+- If the server's SSH host key changes, rackmap refuses to connect until you open Edit and
+  enter the password again, which accepts the new key.
+- Terminals travel over the same connection as the rest of rackmap, which is plain HTTP unless
+  you put it behind HTTPS or a VPN. Anything typed in a console, including passwords, is only as
+  private as that connection.
+- One session per port at a time is the console server's rule, not rackmap's.
+
 ## Data
 
-Everything lives in one SQLite file, `rackmap.db`, in the directory named by `RACKMAP_DATA`
-(default `./data`). Back that directory up; delete it to start again.
+Everything lives in the directory named by `RACKMAP_DATA` (default `./data`): one SQLite file,
+`rackmap.db`, the key for saved passwords, `secret.key`, and downloaded pictures. Back the
+directory up and keep it private; delete it to start again.
 
 ## Develop
 

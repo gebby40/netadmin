@@ -5,12 +5,16 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException, Request, Response
+import asyncio
+import json
+from urllib.parse import urlsplit
+
+from fastapi import Depends, FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import __version__, auth, catalog, db, discovery, inventory
+from . import __version__, auth, catalog, consoles, db, discovery, inventory
 
 STATIC = Path(__file__).parent / "static"
 
@@ -62,7 +66,7 @@ async def security_headers(request: Request, call_next):
     response.headers.setdefault("Referrer-Policy", "no-referrer")
     response.headers.setdefault(
         "Content-Security-Policy",
-        "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self' ws: wss:; frame-ancestors 'none'",
+        "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ws: wss:; frame-ancestors 'none'",
     )
     if request.url.path.startswith("/api/"):
         response.headers.setdefault("Cache-Control", "no-store")
@@ -190,7 +194,7 @@ def discovery_ignore(host_id: int, body: IgnoreBody, _user: dict = Depends(curre
 def overview(user: dict = Depends(current_user)) -> dict:
     """Everything the rack view draws: racks with their equipment, and equipment not in a rack."""
     new = sum(1 for h in discovery.list_hosts() if not h["ignored"] and not h["device"])
-    return {"user": user["name"], "racks": inventory.list_racks(), "unplaced": inventory.unplaced_devices(), "consoles": [], "new_found": new}
+    return {"user": user["name"], "racks": inventory.list_racks(), "unplaced": inventory.unplaced_devices(), "new_found": new}
 
 
 @app.post("/api/racks")
@@ -251,6 +255,113 @@ def catalog_image(slug: str, face: str, _user: dict = Depends(current_user)) -> 
         raise HTTPException(status_code=404, detail="No picture for this model.")
     data, media = found
     return Response(content=data, media_type=media, headers={"Cache-Control": "private, max-age=604800"})
+
+
+class ConsoleServerBody(BaseModel):
+    name: str = Field(max_length=80)
+    kind: str = Field(default="digi-cm", max_length=20)
+    host: str = Field(max_length=120)
+    port: int = Field(default=22, ge=1, le=65535)
+    username: str = Field(max_length=64)
+    # empty when editing means "keep the saved password"
+    password: str = Field(default="", max_length=256)
+    port_count: int = Field(ge=1, le=consoles.MAX_PORTS)
+
+
+class ConsolePortBody(BaseModel):
+    label: str = Field(default="", max_length=80)
+    device_id: int | None = None
+
+
+@app.exception_handler(consoles.Invalid)
+async def invalid_console(_request: Request, exc: consoles.Invalid) -> JSONResponse:
+    return JSONResponse(status_code=422, content={"detail": str(exc)})
+
+
+@app.get("/api/consoles")
+def consoles_list(_user: dict = Depends(current_user)) -> dict:
+    return {"kinds": consoles.KINDS, "servers": consoles.list_servers()}
+
+
+@app.post("/api/consoles")
+async def consoles_create(body: ConsoleServerBody, _user: dict = Depends(current_user)) -> dict:
+    return await consoles.save_server(body.model_dump())
+
+
+@app.put("/api/consoles/{server_id}")
+async def consoles_update(server_id: int, body: ConsoleServerBody, _user: dict = Depends(current_user)) -> dict:
+    return await consoles.save_server(body.model_dump(), server_id)
+
+
+@app.delete("/api/consoles/{server_id}")
+def consoles_delete(server_id: int, _user: dict = Depends(current_user)) -> dict:
+    consoles.delete_server(server_id)
+    return {}
+
+
+@app.put("/api/consoles/ports/{port_id}")
+def consoles_port(port_id: int, body: ConsolePortBody, _user: dict = Depends(current_user)) -> dict:
+    consoles.update_port(port_id, body.label, body.device_id)
+    return {}
+
+
+def _same_origin(websocket: WebSocket) -> bool:
+    """Browsers send cookies with cross-site WebSocket requests, so the page that opens a
+    console must come from rackmap itself."""
+    origin = websocket.headers.get("origin")
+    host = websocket.headers.get("host")
+    return bool(origin and host and urlsplit(origin).netloc == host)
+
+
+@app.websocket("/ws/console/{port_id}")
+async def console_socket(websocket: WebSocket, port_id: int) -> None:
+    if not _same_origin(websocket) or not auth.session_user(websocket.cookies.get(auth.SESSION_COOKIE)):
+        await websocket.close(code=4401)
+        return
+    await websocket.accept()
+
+    async def say(state: str, message: str = "") -> None:
+        await websocket.send_text(json.dumps({"state": state, "message": message}))
+
+    session = None
+    try:
+        await say("connecting")
+        try:
+            session = await consoles.open_port(port_id)
+        except consoles.ConsoleError as exc:
+            await say("failed", str(exc))
+            await websocket.close(code=1000)
+            return
+        await say("open")
+
+        async def pump_out() -> None:
+            while True:
+                data = await session.read()
+                if not data:
+                    return
+                await websocket.send_bytes(data)
+
+        async def pump_in() -> None:
+            while True:
+                message = json.loads(await websocket.receive_text())
+                if message.get("t") == "in":
+                    session.write(str(message.get("d", "")).encode("utf-8")[:65536])
+                elif message.get("t") == "size":
+                    session.resize(int(message.get("cols", 80)), int(message.get("rows", 24)))
+
+        out_task = asyncio.create_task(pump_out())
+        in_task = asyncio.create_task(pump_in())
+        done, pending = await asyncio.wait({out_task, in_task}, return_when=asyncio.FIRST_COMPLETED)
+        for task in pending:
+            task.cancel()
+        if out_task in done and not out_task.cancelled() and out_task.exception() is None:
+            await say("closed", "The console server ended the session.")
+            await websocket.close(code=1000)
+    except (WebSocketDisconnect, RuntimeError, ValueError):
+        pass
+    finally:
+        if session is not None:
+            session.close()
 
 
 app.mount("/static", StaticFiles(directory=STATIC), name="static")

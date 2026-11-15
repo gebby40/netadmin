@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>rackmap</title>
+  <link rel="stylesheet" href="/static/vendor/xterm.css">
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -12,6 +13,7 @@
     <nav class="nav" aria-label="Sections">
       <button type="button" id="nav-racks" aria-current="page">Racks</button>
       <button type="button" id="nav-discovery">Discovery <span class="badge" id="nav-badge" hidden></span></button>
+      <button type="button" id="nav-consoles">Consoles</button>
     </nav>
     <div class="who">
       <span id="who-name"></span>
@@ -152,6 +154,79 @@
     </section>
   </template>
 
+  <template id="t-consoles">
+    <section class="home consoles">
+      <div class="empty card" id="no-consoles" hidden>
+        <h1>No console server yet</h1>
+        <p class="hint">A console server connects to the serial ports of your equipment. Connect one and rackmap gives you a terminal to each port, here in the browser.</p>
+        <button type="button" class="primary" id="add-first-console">Connect a console server</button>
+      </div>
+
+      <section class="card term-card" id="term-card" hidden>
+        <div class="term-head">
+          <div>
+            <h1 id="term-title"></h1>
+            <p class="hint" id="term-status" role="status"></p>
+          </div>
+          <div class="buttons">
+            <button type="button" class="secondary" id="term-reconnect" hidden>Reconnect</button>
+            <button type="button" class="secondary" id="term-close">Disconnect</button>
+          </div>
+        </div>
+        <div class="term" id="term"></div>
+      </section>
+
+      <div id="console-servers"></div>
+      <div class="actions" id="console-actions" hidden>
+        <button type="button" class="secondary" id="add-console">Connect another console server</button>
+      </div>
+      <p class="foot">rackmap <span id="version"></span> · terminal by xterm.js (MIT)</p>
+    </section>
+  </template>
+
+  <dialog id="console-dialog">
+    <form method="dialog" id="console-form" novalidate>
+      <h1 id="console-dialog-title">Connect a console server</h1>
+      <div class="row">
+        <label>Name<input name="name" maxlength="80" placeholder="Rack console server"></label>
+        <label>Kind<select name="kind" id="console-kind"></select></label>
+      </div>
+      <div class="row">
+        <label>Address<input name="host" maxlength="120" placeholder="192.168.1.50" autocomplete="off" inputmode="url"></label>
+        <label>SSH port<input name="port" type="number" min="1" max="65535" value="22" inputmode="numeric"></label>
+      </div>
+      <div class="row">
+        <label>Account<input name="username" maxlength="64" autocomplete="off" placeholder="root"></label>
+        <label>Password<input name="password" type="password" maxlength="256" autocomplete="new-password"></label>
+      </div>
+      <p class="hint" id="console-pw-note" hidden>Leave the password empty to keep the saved one. Entering it again also accepts the server's current SSH identity.</p>
+      <label>Number of serial ports<input name="port_count" type="number" min="1" max="96" value="16" inputmode="numeric"></label>
+      <p class="hint">rackmap signs in to check these details before saving. The password is stored encrypted on this rackmap server.</p>
+      <p class="error" id="console-error" role="alert" hidden></p>
+      <div class="buttons">
+        <button type="button" class="danger" id="console-delete" hidden>Remove</button>
+        <span class="spacer"></span>
+        <button type="button" class="secondary" data-close>Cancel</button>
+        <button type="submit" class="primary" id="console-save">Connect</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="port-dialog">
+    <form method="dialog" id="port-form" novalidate>
+      <h1 id="port-dialog-title">Port</h1>
+      <label>Label<input name="label" maxlength="80" placeholder="What is plugged into this port"></label>
+      <label>Equipment<select name="device_id" id="port-device"></select></label>
+      <p class="hint">Tying a port to a piece of equipment adds an Open console button to it in the rack view.</p>
+      <p class="error" id="port-error" role="alert" hidden></p>
+      <div class="buttons">
+        <span class="spacer"></span>
+        <button type="button" class="secondary" data-close>Cancel</button>
+        <button type="submit" class="primary" id="port-save">Save</button>
+      </div>
+    </form>
+  </dialog>
+
   <dialog id="rack-dialog">
     <form method="dialog" id="rack-form" novalidate>
       <h1 id="rack-dialog-title">Add rack</h1>
@@ -243,6 +318,8 @@
     </form>
   </dialog>
 
+  <script src="/static/vendor/xterm.js" defer></script>
+  <script src="/static/vendor/addon-fit.js" defer></script>
   <script src="/static/faceplate.js" defer></script>
   <script src="/static/app.js" defer></script>
 </body>

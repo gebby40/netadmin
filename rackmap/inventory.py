@@ -23,6 +23,9 @@ def _device(r) -> dict:
     d["full_depth"] = bool(d["full_depth"])
     # What the rack view needs to draw it: whether photographs exist, and its ports.
     d["kind"] = catalog.get(d["type_slug"]) if d["type_slug"] else None
+    d["console_ports"] = [dict(r) for r in db.query(
+        "SELECT p.id, p.number, p.label, s.name AS server_name FROM console_ports p JOIN console_servers s ON s.id = p.server_id "
+        "WHERE p.device_id = ? ORDER BY s.name, p.number", (d["id"],))]
     return d
 
 
