@@ -436,3 +436,66 @@ details { border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px;
 details[open] { display: grid; gap: 12px; }
 details[open] summary { margin-bottom: 4px; }
 summary { cursor: pointer; font-weight: 600; font-size: 0.9rem; }
+
+/* ---------- navigation ---------- */
+
+.nav { display: flex; gap: 4px; margin-right: auto; margin-left: 12px; }
+
+.nav button {
+  background: none;
+  border: 0;
+  border-radius: 8px;
+  padding: 8px 12px;
+  min-height: 40px;
+  color: #c9d1cd;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.nav button:hover { color: #ffffff; }
+.nav button[aria-current="page"] { background: rgba(255, 255, 255, 0.12); color: #ffffff; }
+
+.badge {
+  background: #4fc3a6;
+  color: #08221c;
+  border-radius: 999px;
+  font: 600 0.75rem/1 var(--mono);
+  padding: 4px 7px;
+}
+
+@media (max-width: 560px) {
+  .bar { flex-wrap: wrap; row-gap: 6px; }
+  .nav { order: 3; width: 100%; margin-left: 0; }
+}
+
+/* ---------- discovery ---------- */
+
+.disc-grid { display: grid; grid-template-columns: minmax(300px, 400px) minmax(0, 1fr); gap: 24px; align-items: start; }
+
+@media (max-width: 900px) {
+  .disc-grid { grid-template-columns: minmax(0, 1fr); }
+}
+
+#scan-card form { margin-top: 12px; }
+#scan-card textarea { font-family: var(--mono); font-size: 0.9rem; }
+
+progress { width: 100%; height: 8px; accent-color: var(--accent); }
+
+.found-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 6px; }
+.found-head h1 { margin: 0; }
+#found h2 { margin: 18px 0 8px; }
+
+.check { display: inline-flex; grid-template-columns: none; align-items: center; gap: 8px; font-weight: 400; min-height: 44px; }
+.check input { width: 18px; height: 18px; min-height: 0; padding: 0; accent-color: var(--accent); }
+
+.hosts { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+
+.host { display: flex; gap: 16px; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; padding: 16px 18px; }
+.host-main { min-width: 0; flex: 1 1 320px; display: grid; gap: 4px; }
+.host-main p { margin: 0; }
+.host-title { display: flex; gap: 6px 12px; flex-wrap: wrap; align-items: baseline; overflow-wrap: anywhere; }
+.host-facts { font-size: 0.92rem; }
+.host-says { overflow-wrap: anywhere; }
+.host-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.muted { color: var(--muted); }

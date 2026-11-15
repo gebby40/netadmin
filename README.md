@@ -6,8 +6,8 @@ Self-hosted network and rack manager. It is being built in stages:
 |---|---|---|
 | 1 | Runs, first-run administrator account, sign-in | done |
 | 2 | Equipment database and an editable rack view with click-for-details | done |
-| 3 | Network discovery that asks where each device sits | next |
-| 4 | Browser terminals through a console server (Digi CM first) | planned |
+| 3 | Network discovery that asks where each device sits | done |
+| 4 | Browser terminals through a console server (Digi CM first) | next |
 | 5 | Server panel: power control, text console, slot for a network KVM | planned |
 | 6 | Remote access over Tailscale | planned |
 
@@ -45,6 +45,23 @@ which is published under CC0 1.0. Photographs of front and rear panels are not b
 first time one is shown, rackmap downloads it from that library and keeps it in the data
 directory, so that needs internet access once per model. Without a photograph, or offline,
 rackmap draws the panel from the port list. Rebuild the catalogue with `tools/build_catalog.py`.
+
+## Discovery
+
+On the Discovery page, list the private networks to scan (one per line, for example
+`192.168.1.0/24`) and press Scan now. For every address that answers, rackmap records its name,
+the common services it offers, the title of its web page and, if it speaks SNMP with the
+community you give, what it says it is. From that it guesses the kind of device and, where the
+model name appears, picks the model from the equipment database. Add… opens the equipment form
+with what was found filled in and asks which rack and unit it sits in; Ignore hides a result.
+Nothing is added to the inventory on its own.
+
+Hardware (MAC) addresses, and so maker names, are only visible for devices on the same network
+as rackmap. To get them for other networks, switch on SNMP on your router and enter its address
+and community under "Ask the router".
+
+rackmap refuses to scan public address ranges, and more than 4,096 addresses in one scan.
+Run it on a machine that is allowed to reach the networks you want scanned.
 
 ## Data
 

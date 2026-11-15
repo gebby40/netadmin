@@ -9,6 +9,10 @@
 <body>
   <header class="bar" id="bar" hidden>
     <div class="brand"><span class="mark" aria-hidden="true"></span>rackmap</div>
+    <nav class="nav" aria-label="Sections">
+      <button type="button" id="nav-racks" aria-current="page">Racks</button>
+      <button type="button" id="nav-discovery">Discovery <span class="badge" id="nav-badge" hidden></span></button>
+    </nav>
     <div class="who">
       <span id="who-name"></span>
       <button class="link" id="sign-out" type="button">Sign out</button>
@@ -98,6 +102,53 @@
         </aside>
       </div>
       <p class="foot">rackmap <span id="version"></span> · equipment database from the NetBox community device-type library (CC0)</p>
+    </section>
+  </template>
+
+  <template id="t-discovery">
+    <section class="home discovery">
+      <div class="disc-grid">
+        <section class="card" id="scan-card">
+          <h1>Find equipment on the network</h1>
+          <p class="hint">rackmap checks every address on the networks you list and shows what answers. Nothing is added until you add it.</p>
+          <form id="scan-form" novalidate>
+            <label>Networks to scan
+              <textarea name="networks" rows="3" placeholder="192.168.1.0/24" spellcheck="false" autocomplete="off"></textarea>
+            </label>
+            <p class="hint" id="net-suggest" hidden></p>
+            <details id="router-box">
+              <summary>Ask the router for hardware addresses (optional)</summary>
+              <p class="hint">rackmap can only see hardware addresses, and so makers, for devices on its own network. If your router has SNMP switched on, it can supply them for every network.</p>
+              <div class="row">
+                <label>Router address<input name="router" maxlength="64" placeholder="192.168.1.1" inputmode="decimal" autocomplete="off"></label>
+                <label>SNMP community<input name="community" type="password" maxlength="64" autocomplete="off" placeholder="public"></label>
+              </div>
+              <p class="hint" id="community-note" hidden>A community is saved. Leave the box empty to keep it.</p>
+            </details>
+            <p class="error" id="scan-error" role="alert" hidden></p>
+            <div class="buttons">
+              <button type="submit" class="primary" id="scan-go">Scan now</button>
+              <span class="hint" id="scan-status" role="status"></span>
+            </div>
+            <progress id="scan-progress" max="100" value="0" hidden></progress>
+          </form>
+        </section>
+
+        <section id="found">
+          <div class="found-head">
+            <h1 id="found-title">Nothing found yet</h1>
+            <label class="check"><input type="checkbox" id="show-ignored"> Show ignored</label>
+          </div>
+          <p class="hint" id="found-empty">Run a scan to see what is on your network.</p>
+          <h2 id="h-new" hidden>New</h2>
+          <ul class="hosts" id="hosts-new"></ul>
+          <h2 id="h-known" hidden>Already recorded</h2>
+          <ul class="hosts" id="hosts-known"></ul>
+          <h2 id="h-ignored" hidden>Ignored</h2>
+          <ul class="hosts" id="hosts-ignored"></ul>
+        </section>
+      </div>
+      <p class="foot">rackmap <span id="version"></span> · maker names from the IEEE address registry</p>
     </section>
   </template>
 

@@ -75,6 +75,26 @@ MIGRATIONS: list[str] = [
     );
     CREATE INDEX devices_rack ON devices (rack_id);
     """,
+    """
+    -- What network scans have turned up. Kept apart from devices: nothing here is inventory
+    -- until someone adds it.
+    CREATE TABLE found_hosts (
+        id INTEGER PRIMARY KEY,
+        ip TEXT NOT NULL UNIQUE,
+        mac TEXT NOT NULL DEFAULT '',
+        vendor TEXT NOT NULL DEFAULT '',
+        hostname TEXT NOT NULL DEFAULT '',
+        sys_name TEXT NOT NULL DEFAULT '',
+        sys_descr TEXT NOT NULL DEFAULT '',
+        http_title TEXT NOT NULL DEFAULT '',
+        http_server TEXT NOT NULL DEFAULT '',
+        ports TEXT NOT NULL DEFAULT '[]',
+        suggested_slug TEXT,
+        ignored INTEGER NOT NULL DEFAULT 0,
+        first_seen TEXT NOT NULL DEFAULT (datetime('now')),
+        last_seen TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    """,
 ]
 
 _lock = threading.Lock()

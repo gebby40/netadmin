@@ -11,12 +11,11 @@ from rackmap import __version__
 
 def make_client():
     os.environ["RACKMAP_DATA"] = tempfile.mkdtemp(prefix="rackmap-test-")
-    from rackmap import app as app_module, auth, db
+    from rackmap import app as app_module, auth, catalog, db, discovery, inventory
 
     db.close()
-    importlib.reload(db)
-    importlib.reload(auth)
-    importlib.reload(app_module)
+    for module in (db, auth, catalog, inventory, discovery, app_module):
+        importlib.reload(module)
     return TestClient(app_module.app)
 
 
@@ -125,3 +124,67 @@ def test_equipment_needs_sign_in_and_sane_values():
         assert c.get("/api/catalog/not-a-real-model/image/front").status_code == 404
         d = c.post("/api/devices", json={"manufacturer": "EnGenius", "model": "EWS357AP", "u_height": 0}).json()
         assert d["name"] == "EnGenius EWS357AP" and d["rack_id"] is None
+
+
+def test_snmp_packets_round_trip():
+    from rackmap import snmp
+
+    request = snmp.encode_request("public", 0xA0, 1234, snmp.SYS_DESCR)
+    # a known-good SNMPv2c GET for sysDescr.0 with community "public"
+    assert request.hex() == "302702010104067075626c6963a01a020204d2020100020100300e300c06082b060102010101000500"
+    binding = snmp._tlv(0x30, snmp._oid("1.3.6.1.2.1.4.22.1.2.7.10.5.0.20") + snmp._tlv(0x04, bytes.fromhex("bc2411916c40")))
+    pdu = snmp._tlv(0xA2, snmp._int(77) + snmp._int(0) + snmp._int(0) + snmp._tlv(0x30, binding))
+    reply = snmp._tlv(0x30, snmp._int(1) + snmp._tlv(0x04, b"public") + pdu)
+    assert snmp.decode_response(reply, 77) == ("1.3.6.1.2.1.4.22.1.2.7.10.5.0.20", 0x04, bytes.fromhex("bc2411916c40"))
+    import pytest
+    with pytest.raises(snmp.SnmpError):
+        snmp.decode_response(reply, 78)  # answer to someone else's question
+    with pytest.raises(snmp.SnmpError):
+        snmp.decode_response(reply[:20], 77)  # truncated
+
+
+def test_discovery_scan_review_and_add():
+    from rackmap import discovery
+
+    c = signed_in()
+    try:
+        # only private networks, of a sensible size
+        assert c.put("/api/discovery/settings", json={"networks": "8.8.8.0/24"}).status_code == 422
+        assert c.put("/api/discovery/settings", json={"networks": "10.0.0.0/8"}).status_code == 422
+        assert c.post("/api/discovery/scan", json={}).status_code == 422  # nothing to scan yet
+        assert c.put("/api/discovery/settings", json={"networks": "192.168.50.0/29", "community": "public"}).status_code == 200
+        view = c.get("/api/discovery").json()
+        assert view["settings"]["community_set"] is True and "community" not in view["settings"]
+
+        answers = {
+            "192.168.50.1": {"ports": [22, 80, 8291], "hostname": "core.lan", "sys_name": "core", "sys_descr": "RouterOS CRS328-24P-4S+RM",
+                             "http_title": "RouterOS router configuration page", "http_server": ""},
+            "192.168.50.2": {"ports": [9100], "hostname": "", "sys_name": "", "sys_descr": "", "http_title": "", "http_server": ""},
+        }
+
+        def fake_probe(ip, community):
+            return {"ip": ip, **answers[ip]} if ip in answers else None
+
+        job = discovery.start_scan(probe_fn=fake_probe, neighbours_fn=lambda: {"192.168.50.1": "48:a9:8a:29:e7:5c"}, wait=True)
+        assert job["state"] == "finished" and job["total"] == 6 and job["found"] == 2
+
+        hosts = {h["ip"]: h for h in c.get("/api/discovery").json()["hosts"]}
+        core = hosts["192.168.50.1"]
+        assert core["vendor"] == "Routerboard.com" and core["suggested_slug"] == "mikrotik-crs328-24p-4s-plus-rm"
+        assert core["looks_like"] == "MikroTik router or switch" and core["best_name"] == "core" and core["device"] is None
+        assert hosts["192.168.50.2"]["looks_like"] == "Printer"
+        assert c.get("/api/overview").json()["new_found"] == 2
+
+        # adding the equipment (with the found address) marks the result as recorded
+        added = c.post("/api/devices", json={"type_slug": core["suggested_slug"], "name": "core", "ip": core["ip"], "mac": core["mac"]}).json()
+        hosts = {h["ip"]: h for h in c.get("/api/discovery").json()["hosts"]}
+        assert hosts["192.168.50.1"]["device"] == {"id": added["id"], "name": "core"}
+        # ignoring hides a result from the count without deleting it
+        assert c.post(f"/api/discovery/hosts/{hosts['192.168.50.2']['id']}/ignore", json={"ignored": True}).status_code == 200
+        assert c.get("/api/overview").json()["new_found"] == 0
+        # a second scan updates rather than duplicates
+        discovery.start_scan(probe_fn=fake_probe, neighbours_fn=lambda: {}, wait=True)
+        again = c.get("/api/discovery").json()["hosts"]
+        assert len(again) == 2 and {h["ip"]: h for h in again}["192.168.50.1"]["mac"] == "48:a9:8a:29:e7:5c"
+    finally:
+        c.__exit__(None, None, None)

@@ -10,7 +10,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import __version__, auth, catalog, db, inventory
+from . import __version__, auth, catalog, db, discovery, inventory
 
 STATIC = Path(__file__).parent / "static"
 
@@ -137,10 +137,60 @@ async def invalid_request(_request: Request, exc: inventory.Invalid) -> JSONResp
     return JSONResponse(status_code=422, content={"detail": str(exc)})
 
 
+@app.exception_handler(discovery.Invalid)
+async def invalid_discovery(_request: Request, exc: discovery.Invalid) -> JSONResponse:
+    return JSONResponse(status_code=422, content={"detail": str(exc)})
+
+
+class DiscoverySettings(BaseModel):
+    networks: str = Field(default="", max_length=2000)
+    router: str = Field(default="", max_length=64)
+    # None leaves the saved community as it is; an empty string clears it
+    community: str | None = Field(default=None, max_length=64)
+
+
+class IgnoreBody(BaseModel):
+    ignored: bool
+
+
+def _discovery_view() -> dict:
+    settings = discovery.get_settings()
+    return {
+        "settings": {"networks": settings["networks"], "router": settings["router"], "community_set": bool(settings["community"])},
+        "suggested_networks": discovery.own_networks(),
+        "job": discovery.status(),
+        "hosts": discovery.list_hosts(),
+    }
+
+
+@app.get("/api/discovery")
+def discovery_view(_user: dict = Depends(current_user)) -> dict:
+    return _discovery_view()
+
+
+@app.put("/api/discovery/settings")
+def discovery_settings(body: DiscoverySettings, _user: dict = Depends(current_user)) -> dict:
+    community = discovery.get_settings()["community"] if body.community is None else body.community
+    discovery.save_settings(body.networks, body.router, community)
+    return _discovery_view()
+
+
+@app.post("/api/discovery/scan")
+def discovery_scan(_user: dict = Depends(current_user)) -> dict:
+    return {"job": discovery.start_scan()}
+
+
+@app.post("/api/discovery/hosts/{host_id}/ignore")
+def discovery_ignore(host_id: int, body: IgnoreBody, _user: dict = Depends(current_user)) -> dict:
+    discovery.set_ignored(host_id, body.ignored)
+    return {}
+
+
 @app.get("/api/overview")
 def overview(user: dict = Depends(current_user)) -> dict:
     """Everything the rack view draws: racks with their equipment, and equipment not in a rack."""
-    return {"user": user["name"], "racks": inventory.list_racks(), "unplaced": inventory.unplaced_devices(), "consoles": []}
+    new = sum(1 for h in discovery.list_hosts() if not h["ignored"] and not h["device"])
+    return {"user": user["name"], "racks": inventory.list_racks(), "unplaced": inventory.unplaced_devices(), "consoles": [], "new_found": new}
 
 
 @app.post("/api/racks")

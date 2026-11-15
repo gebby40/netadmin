@@ -4,7 +4,7 @@ const main = document.getElementById("main");
 const bar = document.getElementById("bar");
 const $ = (id) => document.getElementById(id);
 
-const state = { version: "", racks: [], unplaced: [], rackId: null, face: "front", selectedId: null };
+const state = { version: "", view: "racks", racks: [], unplaced: [], rackId: null, face: "front", selectedId: null, newFound: 0, discovery: null, showIgnored: false };
 
 /* ---------- talking to the server ---------- */
 
@@ -132,7 +132,20 @@ async function reload() {
   if (!state.racks.some((r) => r.id === state.rackId)) state.rackId = state.racks.length ? state.racks[0].id : null;
   if (state.selectedId !== null && !findDevice(state.selectedId)) state.selectedId = null;
   $("who-name").textContent = overview.user;
-  render();
+  state.newFound = overview.new_found || 0;
+  renderNav();
+  if (state.view === "racks" && $("rack-tabs")) render();
+}
+
+function renderNav() {
+  $("nav-racks").toggleAttribute("aria-current", state.view === "racks");
+  $("nav-discovery").toggleAttribute("aria-current", state.view === "discovery");
+  if (state.view === "racks") $("nav-racks").setAttribute("aria-current", "page");
+  if (state.view === "discovery") $("nav-discovery").setAttribute("aria-current", "page");
+  const badge = $("nav-badge");
+  badge.hidden = state.newFound === 0;
+  badge.textContent = state.newFound;
+  badge.setAttribute("aria-label", `${state.newFound} new`);
 }
 
 function render() {
@@ -453,9 +466,18 @@ function openDeviceDialog(device, preset) {
     form.elements.u_height.value = device.u_height;
     form.elements.full_depth.value = String(device.full_depth);
   }
+  if (!device && preset) {
+    for (const key of ["name", "ip", "mac", "admin_url"]) if (preset[key]) form.elements[key].value = preset[key];
+    if (preset.ip || preset.mac) $("more").open = true;
+    if (preset.kind) chosenKind = preset.kind;
+  }
   setError("device-error", "");
-  modelMode = device ? (device.kind ? "chosen" : "custom") : "search";
+  modelMode = device ? (device.kind ? "chosen" : "custom") : (chosenKind ? "chosen" : "search");
   setModelMode(modelMode);
+  if (!device && preset && preset.searchText && !chosenKind) {
+    $("model-q").value = preset.searchText;
+    $("model-q").dispatchEvent(new Event("input"));
+  }
   refreshPositions(from.position_u !== null && from.position_u !== undefined ? from.position_u : undefined);
   $("device-dialog").showModal();
   (device ? form.elements.name : $("model-q")).focus();
@@ -536,7 +558,7 @@ $("device-form").addEventListener("submit", async (event) => {
     state.selectedId = saved.id;
     if (saved.rack_id) state.rackId = saved.rack_id;
     $("device-dialog").close("");
-    await reload();
+    if (state.view === "discovery") { await reload(); await loadDiscovery(); } else { await reload(); }
   } catch (err) {
     setError("device-error", err.message);
   } finally {
@@ -544,10 +566,154 @@ $("device-form").addEventListener("submit", async (event) => {
   }
 });
 
+/* ---------- discovery ---------- */
+
+let scanTimer = null;
+
+function hostFacts(host) {
+  const facts = [];
+  if (host.vendor) facts.push(host.vendor);
+  facts.push(host.looks_like);
+  if (host.services.length) facts.push([...new Set(host.services)].join(", "));
+  return facts.join(" · ");
+}
+
+function hostSays(host) {
+  return [host.sys_descr, host.http_title && `Web page: “${host.http_title}”`].filter(Boolean).join(" · ");
+}
+
+async function addFromHost(host) {
+  let kind = null;
+  if (host.suggested_slug) {
+    try { kind = await api(`/api/catalog/${encodeURIComponent(host.suggested_slug)}`); } catch (err) { kind = null; }
+  }
+  const ports = new Set(host.ports);
+  const adminUrl = ports.has(443) ? `https://${host.ip}` : ports.has(80) ? `http://${host.ip}` : ports.has(8443) ? `https://${host.ip}:8443` : ports.has(8080) ? `http://${host.ip}:8080` : "";
+  const realVendor = host.vendor && !host.vendor.startsWith("Private") ? host.vendor.split(" ")[0] : "";
+  openDeviceDialog(null, { name: host.best_name, ip: host.ip, mac: host.mac, admin_url: adminUrl, kind, searchText: realVendor, rack_id: state.rackId, face: "front" });
+}
+
+function hostRow(host) {
+  const title = host.best_name ? `${host.best_name}` : host.ip;
+  const actions = [];
+  if (host.device) {
+    actions.push(h("button", { type: "button", class: "secondary", onclick: () => { state.view = "racks"; state.selectedId = host.device.id; const d = findDevice(host.device.id); if (d && d.rack_id) state.rackId = d.rack_id; showView(); } }, "Show in rack view"));
+  } else if (host.ignored) {
+    actions.push(h("button", { type: "button", class: "secondary", onclick: () => ignoreHost(host, false) }, "Stop ignoring"));
+  } else {
+    actions.push(h("button", { type: "button", class: "primary", onclick: () => addFromHost(host) }, "Add…"));
+    actions.push(h("button", { type: "button", class: "secondary", onclick: () => ignoreHost(host, true) }, "Ignore"));
+  }
+  return h("li", { class: "host card" },
+    h("div", { class: "host-main" },
+      h("div", { class: "host-title" },
+        h("strong", { text: title }),
+        h("span", { class: "mono", text: host.best_name ? host.ip : "" }),
+        host.mac ? h("span", { class: "mono muted", text: host.mac }) : null),
+      h("p", { class: "host-facts", text: hostFacts(host) }),
+      hostSays(host) ? h("p", { class: "hint host-says", text: hostSays(host) }) : null,
+      host.device ? h("p", { class: "hint", text: `Recorded as “${host.device.name}”.` }) : null,
+      !host.device && host.suggested_slug ? h("p", { class: "hint", text: "rackmap recognised the model; Add… will fill it in." }) : null),
+    h("div", { class: "host-actions" }, actions));
+}
+
+async function ignoreHost(host, ignored) {
+  try {
+    await api(`/api/discovery/hosts/${host.id}/ignore`, { ignored });
+    await reload();
+    await loadDiscovery();
+  } catch (err) { await failed(err); }
+}
+
+function renderDiscovery() {
+  const view = state.discovery;
+  if (!view || state.view !== "discovery") return;
+  const job = view.job;
+  const running = job.state === "running";
+  $("scan-go").disabled = running;
+  $("scan-go").textContent = running ? "Scanning…" : "Scan now";
+  const progress = $("scan-progress");
+  progress.hidden = !running;
+  if (running) {
+    progress.max = job.total;
+    progress.value = job.done;
+    $("scan-status").textContent = `${job.done} of ${job.total} addresses checked, ${job.found} answering`;
+  } else if (job.state === "finished") {
+    const seconds = Math.max(1, Math.round(job.finished - job.started));
+    $("scan-status").textContent = `Last scan: ${job.found} of ${job.total} addresses answered (${seconds}s). ${job.note || ""}`.trim();
+  } else if (job.state === "failed") {
+    $("scan-status").textContent = job.note;
+  } else {
+    $("scan-status").textContent = "";
+  }
+
+  const fresh = view.hosts.filter((x) => !x.ignored && !x.device);
+  const known = view.hosts.filter((x) => x.device);
+  const ignored = view.hosts.filter((x) => x.ignored && !x.device);
+  $("found-title").textContent = view.hosts.length ? `${fresh.length} new, ${known.length} already recorded` : "Nothing found yet";
+  $("found-empty").hidden = view.hosts.length > 0;
+  $("h-new").hidden = fresh.length === 0;
+  $("h-known").hidden = known.length === 0;
+  $("h-ignored").hidden = !(state.showIgnored && ignored.length);
+  $("show-ignored").parentElement.hidden = ignored.length === 0;
+  $("show-ignored").parentElement.lastChild.textContent = ` Show ignored (${ignored.length})`;
+  $("hosts-new").replaceChildren(...fresh.map(hostRow));
+  $("hosts-known").replaceChildren(...known.map(hostRow));
+  $("hosts-ignored").replaceChildren(...(state.showIgnored ? ignored.map(hostRow) : []));
+}
+
+async function loadDiscovery(fillForm) {
+  state.discovery = await api("/api/discovery");
+  if (state.view !== "discovery") return;
+  if (fillForm) {
+    const form = $("scan-form");
+    const settings = state.discovery.settings;
+    form.elements.networks.value = settings.networks || state.discovery.suggested_networks.join("\n");
+    form.elements.router.value = settings.router;
+    $("community-note").hidden = !settings.community_set;
+    $("router-box").open = Boolean(settings.router);
+    const suggest = state.discovery.suggested_networks;
+    $("net-suggest").hidden = suggest.length === 0;
+    $("net-suggest").textContent = suggest.length ? `rackmap itself is on ${suggest.join(", ")}. One network per line; private ranges only.` : "";
+  }
+  renderDiscovery();
+  clearTimeout(scanTimer);
+  if (state.discovery.job.state === "running") {
+    scanTimer = setTimeout(async () => {
+      try { await loadDiscovery(); if (state.discovery.job.state !== "running") await reload(); } catch (err) { /* next click will report it */ }
+    }, 1500);
+  }
+}
+
+function discoveryScreen() {
+  show("t-discovery");
+  $("version").textContent = state.version;
+  $("show-ignored").checked = state.showIgnored;
+  $("show-ignored").addEventListener("change", (event) => { state.showIgnored = event.target.checked; renderDiscovery(); });
+  $("scan-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.target;
+    setError("scan-error", "");
+    if (!form.elements.networks.value.trim()) return setError("scan-error", "Enter at least one network to scan, for example 192.168.1.0/24.");
+    const body = { networks: form.elements.networks.value, router: form.elements.router.value.trim() };
+    if (form.elements.community.value) body.community = form.elements.community.value;
+    $("scan-go").disabled = true;
+    try {
+      await api("/api/discovery/settings", body, "PUT");
+      await api("/api/discovery/scan", {});
+      form.elements.community.value = "";
+      await loadDiscovery(true);
+    } catch (err) {
+      $("scan-go").disabled = false;
+      if (err.status === 401) return start();
+      setError("scan-error", err.message);
+    }
+  });
+}
+
 /* ---------- start-up ---------- */
 
-function homeScreen() {
-  bar.hidden = false;
+function racksScreen() {
   show("t-home");
   $("version").textContent = state.version;
   $("add-rack").addEventListener("click", () => openRackDialog(null));
@@ -557,6 +723,27 @@ function homeScreen() {
   $("face-front").addEventListener("click", () => { state.face = "front"; render(); });
   $("face-rear").addEventListener("click", () => { state.face = "rear"; render(); });
 }
+
+async function showView() {
+  bar.hidden = false;
+  clearTimeout(scanTimer);
+  renderNav();
+  try {
+    if (state.view === "discovery") {
+      discoveryScreen();
+      await loadDiscovery(true);
+    } else {
+      racksScreen();
+      render();
+    }
+  } catch (err) {
+    if (err.status === 401) return start();
+    message(err.message);
+  }
+}
+
+$("nav-racks").addEventListener("click", () => { state.view = "racks"; showView(); });
+$("nav-discovery").addEventListener("click", () => { state.view = "discovery"; showView(); });
 
 async function start() {
   let status;
@@ -569,13 +756,14 @@ async function start() {
   state.version = status.version;
   if (status.needs_setup) return setupScreen();
   if (!status.user) return loginScreen();
-  homeScreen();
   try {
     await reload();
   } catch (err) {
     if (err.status === 401) return loginScreen();
     message(err.message);
+    return;
   }
+  await showView();
 }
 
 $("sign-out").addEventListener("click", async () => {
