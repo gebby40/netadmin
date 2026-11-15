@@ -202,7 +202,8 @@ def discovery_ignore(host_id: int, body: IgnoreBody, _user: dict = Depends(curre
 def overview(user: dict = Depends(current_user)) -> dict:
     """Everything the rack view draws: racks with their equipment, and equipment not in a rack."""
     new = sum(1 for h in discovery.list_hosts() if not h["ignored"] and not h["device"])
-    return {"user": user["name"], "racks": inventory.list_racks(), "unplaced": inventory.unplaced_devices(), "new_found": new}
+    return {"user": user["name"], "racks": inventory.list_racks(), "unplaced": inventory.unplaced_devices(), "new_found": new,
+            "console_servers": consoles.list_servers(), "console_kinds": consoles.KINDS}
 
 
 @app.post("/api/racks")
@@ -278,6 +279,12 @@ class ConsoleServerBody(BaseModel):
     # empty when editing means "keep the saved password"
     password: str = Field(default="", max_length=256)
     port_count: int = Field(ge=1, le=consoles.MAX_PORTS)
+    # the piece of equipment in the rack that this console server is, if it has been added
+    device_id: int | None = None
+
+
+class DevicePortBody(BaseModel):
+    port_id: int | None = None
 
 
 class ConsolePortBody(BaseModel):
@@ -309,6 +316,12 @@ async def consoles_update(server_id: int, body: ConsoleServerBody, _user: dict =
 def consoles_delete(server_id: int, _user: dict = Depends(current_user)) -> dict:
     consoles.delete_server(server_id)
     return {}
+
+
+@app.put("/api/devices/{device_id}/console-port")
+def device_console_port(device_id: int, body: DevicePortBody, _user: dict = Depends(current_user)) -> dict:
+    consoles.set_device_port(device_id, body.port_id)
+    return {"ok": True}
 
 
 @app.put("/api/consoles/ports/{port_id}")

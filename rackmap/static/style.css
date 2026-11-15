@@ -569,3 +569,9 @@ progress { width: 100%; height: 8px; accent-color: var(--accent); }
 }
 
 code { font-family: var(--mono); font-size: 0.88em; background: var(--bg); padding: 1px 5px; border-radius: 4px; }
+
+/* console choices in the equipment panel */
+.inline-choice { display: grid; gap: 4px; font-size: 0.9rem; color: var(--muted); }
+.inline-choice select { width: 100%; }
+.port-links { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.role-links { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 14px 0 0; font-size: 0.9rem; }

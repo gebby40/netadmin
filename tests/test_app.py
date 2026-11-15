@@ -422,3 +422,47 @@ def test_https_is_on_by_default_with_a_certificate_rackmap_makes(tmp_path):
             launcher.settings({"RACKMAP_TLS": "maybe"})
     finally:
         db.DATA_DIR = real
+
+
+def test_console_server_as_equipment_offers_its_ports_to_the_rest():
+    from fake_digi import FakeDigi
+
+    c = signed_in()
+    try:
+        with FakeDigi() as digi:
+            digi_box = c.post("/api/devices", json={"name": "Digi CM 48", "u_height": 1}).json()
+            firewall = c.post("/api/devices", json={"name": "Firewall", "u_height": 1}).json()
+            switch = c.post("/api/devices", json={"name": "Switch", "u_height": 1}).json()
+            assert digi_box["console_server_id"] is None
+            assert c.get("/api/overview").json()["console_servers"] == []
+
+            body = {"name": "Digi CM 48", "host": "127.0.0.1", "port": digi.port, "username": "root", "password": "digi-secret", "port_count": 4}
+            assert c.post("/api/consoles", json={**body, "device_id": 9999}).status_code == 422
+            server = c.post("/api/consoles", json={**body, "device_id": digi_box["id"]}).json()
+            assert server["device_id"] == digi_box["id"]
+            overview = c.get("/api/overview").json()
+            assert overview["console_servers"][0]["id"] == server["id"] and "secret" not in str(overview["console_servers"])
+            by_name = {d["name"]: d for d in overview["unplaced"]}
+            assert by_name["Digi CM 48"]["console_server_id"] == server["id"] and by_name["Firewall"]["console_server_id"] is None
+
+            port1, port2 = server["ports"][0]["id"], server["ports"][1]["id"]
+            url = f"/api/devices/{firewall['id']}/console-port"
+            assert c.put(url, json={"port_id": port1}).status_code == 200
+            ports = c.get("/api/consoles").json()["servers"][0]["ports"]
+            assert ports[0]["device"]["id"] == firewall["id"] and ports[0]["label"] == "Firewall"  # an empty label takes the name
+            # a port serves one piece of equipment, and the console server isn't plugged into itself
+            assert c.put(f"/api/devices/{switch['id']}/console-port", json={"port_id": port1}).status_code == 422
+            assert c.put(f"/api/devices/{digi_box['id']}/console-port", json={"port_id": port2}).status_code == 422
+            assert c.put(url, json={"port_id": 9999}).status_code == 422
+            # moving to another port frees the first; "not connected" frees it altogether
+            assert c.put(url, json={"port_id": port2}).status_code == 200
+            ports = c.get("/api/consoles").json()["servers"][0]["ports"]
+            assert ports[0]["device"] is None and ports[1]["device"]["id"] == firewall["id"]
+            assert c.put(url, json={"port_id": None}).status_code == 200
+            assert all(p["device"] is None for p in c.get("/api/consoles").json()["servers"][0]["ports"])
+
+            # deleting the equipment keeps the console server, just no longer tied to it
+            assert c.delete(f"/api/devices/{digi_box['id']}").status_code == 200
+            assert c.get("/api/consoles").json()["servers"][0]["device_id"] is None
+    finally:
+        c.__exit__(None, None, None)

@@ -200,7 +200,11 @@
         <label>Password<input name="password" type="password" maxlength="256" autocomplete="new-password"></label>
       </div>
       <p class="hint" id="console-pw-note" hidden>Leave the password empty to keep the saved one. Entering it again also accepts the server's current SSH identity.</p>
-      <label>Number of serial ports<input name="port_count" type="number" min="1" max="96" value="16" inputmode="numeric"></label>
+      <div class="row">
+        <label>Number of serial ports<input name="port_count" type="number" min="1" max="96" value="16" inputmode="numeric"></label>
+        <label>Equipment in the rack<select name="device_id" id="console-device"></select></label>
+      </div>
+      <p class="hint" id="console-existing-note" hidden></p>
       <p class="hint">rackmap signs in to check these details before saving. The password is stored encrypted on this rackmap server.</p>
       <p class="error" id="console-error" role="alert" hidden></p>
       <div class="buttons">
@@ -227,26 +231,11 @@
     </form>
   </dialog>
 
-  <dialog id="link-dialog">
-    <form method="dialog" id="link-form" novalidate>
-      <h1 id="link-dialog-title">Connect a console port</h1>
-      <p class="hint">For equipment with a serial console cable running to a console server. Choose the port the cable is plugged into, and rackmap adds an Open console button here.</p>
-      <label id="link-choice">Console server port<select name="port_id" id="link-port"></select></label>
-      <p class="hint" id="link-none" hidden>There is no console server yet, or all of its ports are in use. Add one under Consoles first, then come back here.</p>
-      <p class="error" id="link-error" role="alert" hidden></p>
-      <div class="buttons">
-        <span class="spacer"></span>
-        <button type="button" class="secondary" data-close>Cancel</button>
-        <button type="submit" class="primary" id="link-save">Connect</button>
-      </div>
-    </form>
-  </dialog>
-
   <dialog id="controller-dialog">
     <form method="dialog" id="controller-form" novalidate>
       <h1 id="controller-dialog-title">Connect the management controller</h1>
       <p class="hint">Servers have a small built-in computer for management: iDRAC on Dell, iLO on HPE, BMC or IPMI on others. rackmap uses it to show power and health and to switch the server on and off. Its address and password are the controller's own, not the server's.</p>
-      <p class="hint">Not a server? Switches, firewalls and other gear with a serial cable to a console server are connected with “Connect console port” instead.</p>
+      <p class="hint">Not a server? Switches, firewalls and other gear with a serial cable to a console server get a “Console port” choice once a console server is set up.</p>
       <label>Controller address<input name="host" maxlength="120" placeholder="192.168.1.60" autocomplete="off" inputmode="url"></label>
       <div class="row">
         <label>Account<input name="username" maxlength="64" autocomplete="off" placeholder="root"></label>

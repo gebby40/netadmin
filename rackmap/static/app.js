@@ -133,6 +133,8 @@ async function reload() {
   if (state.selectedId !== null && !findDevice(state.selectedId)) state.selectedId = null;
   $("who-name").textContent = overview.user;
   state.newFound = overview.new_found || 0;
+  state.consoles = overview.console_servers || [];
+  state.kinds = overview.console_kinds || {};
   renderNav();
   if (state.view === "racks" && $("rack-tabs")) render();
 }
@@ -401,6 +403,65 @@ function fact(label, value) {
   return [h("dt", { text: label }), h("dd", {}, value)];
 }
 
+function openConsoleTerminal(portId) {
+  state.view = "consoles";
+  state.openPort = portId;
+  showView();
+}
+
+// What the details panel says about consoles. Three cases: this equipment is a console server
+// (show what is plugged into it); a console server exists (offer its ports, right here); or
+// there is none, and nothing is shown.
+function consoleSection(device) {
+  const own = state.consoles.find((server) => server.id === device.console_server_id);
+  if (own) {
+    const used = own.ports.filter((port) => port.device);
+    return h("section", { class: "controller" },
+      h("h2", { text: "Console server" }),
+      h("dl", { class: "facts" },
+        fact("Address", h("span", { class: "mono", text: own.host })),
+        fact("Serial ports", `${own.port_count}, ${used.length} in use`)),
+      used.length ? h("ul", { class: "port-links" }, used.map((port) => h("li", {},
+        h("button", { type: "button", class: "link", onclick: () => openConsoleTerminal(port.id) }, `Port ${port.number}: ${port.device.name}`)))) : null,
+      h("div", { class: "buttons" },
+        h("button", { type: "button", class: "secondary", onclick: () => { state.view = "consoles"; showView(); } }, "All ports"),
+        h("button", { type: "button", class: "secondary", onclick: () => openConsoleDialog(own) }, "Edit console server")));
+  }
+  if (!state.consoles.length) return "";
+  const mine = device.console_ports || [];
+  const choices = state.consoles.flatMap((server) => server.ports
+    .filter((port) => !port.device || port.device.id === device.id)
+    .map((port) => ({ id: port.id, text: `${server.name} · port ${port.number}${port.label && port.label !== device.name ? ` (${port.label})` : ""}` })));
+  const select = h("select", { id: "device-console-port", "aria-label": "Console port" },
+    h("option", { value: "" }, "Not connected"),
+    ...choices.map((choice) => h("option", { value: String(choice.id) }, choice.text)));
+  select.value = mine.length ? String(mine[0].id) : "";
+  select.addEventListener("change", async () => {
+    select.disabled = true;
+    try {
+      await api(`/api/devices/${device.id}/console-port`, { port_id: select.value ? Number(select.value) : null }, "PUT");
+      await reload();
+    } catch (err) { await failed(err); await reload(); }
+  });
+  return h("section", { class: "controller" },
+    h("h2", { text: "Console" }),
+    h("label", { class: "inline-choice" }, "Console port", select),
+    mine.length ? h("div", { class: "buttons" }, mine.map((port) =>
+      h("button", { type: "button", class: "primary", onclick: () => openConsoleTerminal(port.id) }, mine.length > 1 ? `Open console (port ${port.number})` : "Open console"))) : null);
+}
+
+// Set-up choices that only apply to some equipment, kept out of the way as plain links.
+function roleLinks(device) {
+  const links = [];
+  if (!device.has_controller && device.console_server_id === null) {
+    links.push(h("button", { type: "button", class: "link", onclick: () => openControllerDialog(device, null) }, "Set up a server controller (iDRAC, iLO…)"));
+  }
+  if (device.console_server_id === null && !(device.console_ports || []).length && !device.has_controller) {
+    links.push(h("button", { type: "button", class: "link", onclick: () => openConsoleDialog(null, device) }, "This is a console server"));
+  }
+  return links.length ? h("p", { class: "role-links" }, links) : "";
+}
+
 function renderDetail() {
   const panel = $("detail");
   const device = state.selectedId === null ? null : findDevice(state.selectedId);
@@ -429,17 +490,14 @@ function renderDetail() {
       fact("Serial number", device.serial && h("span", { class: "mono", text: device.serial })),
       fact("Admin page", adminLink),
       fact("Notes", device.notes && h("span", { class: "notes", text: device.notes }))),
-    (device.console_ports || []).length ? h("div", { class: "buttons console-links" },
-      device.console_ports.map((port) => h("button", { type: "button", class: "primary", onclick: () => { state.view = "consoles"; state.openPort = port.id; showView(); } },
-        device.console_ports.length > 1 ? `Open console (port ${port.number})` : "Open console"))) : "",
+    consoleSection(device),
     device.has_controller ? h("section", { class: "controller", id: "controller-panel" }, h("h2", { text: "Management controller" }), h("p", { class: "hint", text: "Asking the controller…" })) : "",
     h("div", { class: "buttons" },
       h("button", { type: "button", class: "secondary", onclick: () => openDeviceDialog(device) }, "Edit"),
-      h("button", { type: "button", class: "secondary", onclick: () => openLinkDialog(device) }, "Connect console port"),
-      device.has_controller ? null : h("button", { type: "button", class: "secondary", onclick: () => openControllerDialog(device, null) }, "Connect server controller"),
       placed ? h("button", { type: "button", class: "secondary", onclick: () => takeOut(device) }, "Take out of rack") : null,
       h("span", { class: "spacer" }),
-      h("button", { type: "button", class: "danger", onclick: () => removeDevice(device) }, "Delete")));
+      h("button", { type: "button", class: "danger", onclick: () => removeDevice(device) }, "Delete")),
+    roleLinks(device));
   if (device.has_controller) loadControllerPanel(device);
 }
 
@@ -992,10 +1050,22 @@ async function loadConsoles() {
   renderConsoles();
 }
 
-function openConsoleDialog(server) {
+function openConsoleDialog(server, forDevice) {
+  // Started from a piece of equipment: if rackmap already knows one console server that isn't
+  // tied to equipment yet, this is most likely it, so offer that one instead of a second copy.
+  const loose = state.consoles.filter((s) => s.device_id === null);
+  const note = $("console-existing-note");
+  note.hidden = true;
+  if (!server && forDevice && loose.length === 1) {
+    server = loose[0];
+    note.textContent = `rackmap already has the console server “${server.name}”, not yet tied to equipment. Saving ties it to “${forDevice.name}”.`;
+    note.hidden = false;
+  }
   editingConsole = server || null;
   const form = $("console-form");
   form.reset();
+  $("console-device").replaceChildren(h("option", { value: "" }, "Not in the rack yet"),
+    ...allDevices().map((device) => h("option", { value: String(device.id) }, device.name)));
   $("console-kind").replaceChildren(...Object.entries(state.kinds).map(([value, label]) => h("option", { value }, label)));
   $("console-dialog-title").textContent = server ? "Edit console server" : "Connect a console server";
   $("console-save").textContent = server ? "Save" : "Connect";
@@ -1003,6 +1073,14 @@ function openConsoleDialog(server) {
   $("console-pw-note").hidden = !server;
   if (server) {
     for (const key of ["name", "kind", "host", "port", "username", "port_count"]) form.elements[key].value = server[key];
+    form.elements.device_id.value = server.device_id === null ? "" : String(server.device_id);
+  }
+  if (forDevice) {
+    form.elements.device_id.value = String(forDevice.id);
+    if (!server) {
+      form.elements.name.value = forDevice.name.slice(0, 80);
+      form.elements.host.value = forDevice.ip || "";
+    }
   }
   setError("console-error", "");
   $("console-dialog").showModal();
@@ -1014,7 +1092,7 @@ $("console-form").addEventListener("submit", async (event) => {
   const form = event.target;
   const body = { name: form.elements.name.value.trim(), kind: form.elements.kind.value, host: form.elements.host.value.trim(),
     port: Number(form.elements.port.value) || 22, username: form.elements.username.value.trim(), password: form.elements.password.value,
-    port_count: Number(form.elements.port_count.value) };
+    port_count: Number(form.elements.port_count.value), device_id: form.elements.device_id.value ? Number(form.elements.device_id.value) : null };
   if (!body.name) return setError("console-error", "Give the console server a name.");
   if (!body.host) return setError("console-error", "Enter the console server's address.");
   if (!body.username) return setError("console-error", "Enter the account rackmap signs in with.");
@@ -1026,7 +1104,8 @@ $("console-form").addEventListener("submit", async (event) => {
   try {
     if (editingConsole) await api(`/api/consoles/${editingConsole.id}`, body, "PUT"); else await api("/api/consoles", body);
     $("console-dialog").close("");
-    await loadConsoles();
+    await reload();
+    if (state.view === "consoles") await loadConsoles();
   } catch (err) {
     setError("console-error", err.message);
   } finally {
@@ -1074,44 +1153,6 @@ $("port-form").addEventListener("submit", async (event) => {
     setError("port-error", err.message);
   } finally {
     $("port-save").disabled = false;
-  }
-});
-
-/* tie a console-server port to a piece of equipment, starting from the equipment */
-let linkingDevice = null;
-let linkPorts = [];
-
-async function openLinkDialog(device) {
-  let servers;
-  try { servers = (await api("/api/consoles")).servers; } catch (err) { return failed(err); }
-  linkingDevice = device;
-  // ports already tied to other equipment are left out; change those under Consoles
-  linkPorts = servers.flatMap((server) => server.ports.filter((port) => !port.device).map((port) => ({ ...port, server: server.name })));
-  $("link-dialog-title").textContent = `Connect a console port to “${device.name}”`;
-  $("link-port").replaceChildren(...linkPorts.map((port) =>
-    h("option", { value: String(port.id) }, `${port.server} · port ${port.number}${port.label ? ` (${port.label})` : ""}`)));
-  const guess = linkPorts.find((port) => port.label && device.name.toLowerCase().includes(port.label.toLowerCase()));
-  if (guess) $("link-port").value = String(guess.id);
-  $("link-choice").hidden = !linkPorts.length;
-  $("link-none").hidden = Boolean(linkPorts.length);
-  $("link-save").hidden = !linkPorts.length;
-  setError("link-error", "");
-  $("link-dialog").showModal();
-}
-
-$("link-form").addEventListener("submit", async (event) => {
-  event.preventDefault();
-  const port = linkPorts.find((p) => String(p.id) === $("link-port").value);
-  if (!port || !linkingDevice) return;
-  $("link-save").disabled = true;
-  try {
-    await api(`/api/consoles/ports/${port.id}`, { label: port.label || linkingDevice.name.slice(0, 80), device_id: linkingDevice.id }, "PUT");
-    $("link-dialog").close("");
-    await reload();
-  } catch (err) {
-    setError("link-error", err.message);
-  } finally {
-    $("link-save").disabled = false;
   }
 });
 

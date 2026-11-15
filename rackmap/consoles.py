@@ -47,7 +47,8 @@ class ConsoleError(Exception):
 
 def _server(r) -> dict:
     return {"id": r["id"], "name": r["name"], "kind": r["kind"], "kind_name": KINDS.get(r["kind"], r["kind"]), "host": r["host"],
-            "port": r["port"], "username": r["username"], "port_count": r["port_count"], "host_key_fingerprint": r["host_key_fingerprint"]}
+            "port": r["port"], "username": r["username"], "port_count": r["port_count"], "host_key_fingerprint": r["host_key_fingerprint"],
+            "device_id": r["device_id"]}
 
 
 def list_servers() -> list[dict]:
@@ -100,7 +101,10 @@ def _clean(values: dict) -> dict:
         raise Invalid("The SSH port is a number between 1 and 65535.")
     if not 1 <= count <= MAX_PORTS:
         raise Invalid(f"A console server has between 1 and {MAX_PORTS} serial ports.")
-    return {"name": name, "kind": kind, "host": host, "port": port, "username": username, "port_count": count}
+    device_id = values.get("device_id")
+    if device_id is not None and not db.query("SELECT 1 FROM devices WHERE id = ?", (device_id,)):
+        raise Invalid("That piece of equipment no longer exists.")
+    return {"name": name, "kind": kind, "host": host, "port": port, "username": username, "port_count": count, "device_id": device_id}
 
 
 def _sync_ports(server_id: int, count: int) -> None:
@@ -133,15 +137,20 @@ async def save_server(values: dict, server_id: int | None = None) -> dict:
     fingerprint = key.get_fingerprint()
     conn.close()
     secret = secrets_store.seal(password)
+    if d["device_id"] is not None:
+        # a piece of equipment is at most one console server, and isn't plugged into itself
+        db.execute("UPDATE console_servers SET device_id = NULL WHERE device_id = ? AND id IS NOT ?", (d["device_id"], server_id))
+    row = (d["name"], d["kind"], d["host"], d["port"], d["username"], secret, host_key, fingerprint, d["port_count"], d["device_id"])
     if current is None:
         server_id = db.execute(
-            "INSERT INTO console_servers (name, kind, host, port, username, secret, host_key, host_key_fingerprint, port_count) VALUES (?,?,?,?,?,?,?,?,?)",
-            (d["name"], d["kind"], d["host"], d["port"], d["username"], secret, host_key, fingerprint, d["port_count"]))
+            "INSERT INTO console_servers (name, kind, host, port, username, secret, host_key, host_key_fingerprint, port_count, device_id) VALUES (?,?,?,?,?,?,?,?,?,?)", row)
     else:
         db.execute(
-            "UPDATE console_servers SET name=?, kind=?, host=?, port=?, username=?, secret=?, host_key=?, host_key_fingerprint=?, port_count=? WHERE id=?",
-            (d["name"], d["kind"], d["host"], d["port"], d["username"], secret, host_key, fingerprint, d["port_count"], server_id))
+            "UPDATE console_servers SET name=?, kind=?, host=?, port=?, username=?, secret=?, host_key=?, host_key_fingerprint=?, port_count=?, device_id=? WHERE id=?",
+            row + (server_id,))
     _sync_ports(server_id, d["port_count"])
+    if d["device_id"] is not None:
+        db.execute("UPDATE console_ports SET device_id = NULL WHERE server_id = ? AND device_id = ?", (server_id, d["device_id"]))
     return next(s for s in list_servers() if s["id"] == server_id)
 
 
@@ -157,6 +166,27 @@ def update_port(port_id: int, label: str, device_id: int | None) -> None:
     if device_id is not None and not db.query("SELECT 1 FROM devices WHERE id = ?", (device_id,)):
         raise Invalid("That piece of equipment no longer exists.")
     db.execute("UPDATE console_ports SET label = ?, device_id = ? WHERE id = ?", (label.strip()[:80], device_id, port_id))
+
+
+def set_device_port(device_id: int, port_id: int | None) -> None:
+    """Say which console-server port a piece of equipment's console cable is plugged into
+    (None: not plugged into one). A port serves one piece of equipment."""
+    names = db.query("SELECT name FROM devices WHERE id = ?", (device_id,))
+    if not names:
+        raise Invalid("That piece of equipment no longer exists.")
+    if port_id is not None:
+        rows = db.query("SELECT p.label, p.device_id, s.device_id AS server_device FROM console_ports p "
+                        "JOIN console_servers s ON s.id = p.server_id WHERE p.id = ?", (port_id,))
+        if not rows:
+            raise Invalid("That console port no longer exists.")
+        if rows[0]["server_device"] == device_id:
+            raise Invalid("A console server can't be plugged into its own port.")
+        if rows[0]["device_id"] not in (None, device_id):
+            raise Invalid("That port is already used by other equipment. Free it there first.")
+    db.execute("UPDATE console_ports SET device_id = NULL WHERE device_id = ?", (device_id,))
+    if port_id is not None:
+        db.execute("UPDATE console_ports SET device_id = ?, label = CASE WHEN label = '' THEN ? ELSE label END WHERE id = ?",
+                   (device_id, names[0]["name"][:80], port_id))
 
 
 # ---------- live sessions ----------

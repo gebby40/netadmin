@@ -136,6 +136,10 @@ MIGRATIONS: list[str] = [
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
     """,
+    """
+    -- A console server can itself be a piece of equipment in the rack.
+    ALTER TABLE console_servers ADD COLUMN device_id INTEGER REFERENCES devices(id) ON DELETE SET NULL;
+    """,
 ]
 
 _lock = threading.Lock()
