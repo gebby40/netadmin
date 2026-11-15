@@ -171,14 +171,30 @@ class _PasswordClient(asyncssh.SSHClient):
 
     def __init__(self, password: str):
         self._password = password
+        self._tried_password = False
+        self._tried_interactive = False
+        self._answered = False
 
-    def password_auth_requested(self) -> str:
+    # Each step is tried once. Offering the same wrong password again would only burn through
+    # the device's failed-sign-in allowance and get rackmap's address blocked.
+    def password_auth_requested(self) -> str | None:
+        if self._tried_password:
+            return None
+        self._tried_password = True
         return self._password
 
-    def kbdint_auth_requested(self) -> str:
+    def kbdint_auth_requested(self) -> str | None:
+        if self._tried_interactive:
+            return None
+        self._tried_interactive = True
         return ""
 
     def kbdint_challenge_received(self, name, instructions, lang, prompts):
+        if not prompts:
+            return []
+        if self._answered:
+            return None
+        self._answered = True
         return [self._password for _ in prompts]
 
 
