@@ -74,6 +74,10 @@ async def security_headers(request: Request, call_next):
     )
     if request.url.path.startswith("/api/"):
         response.headers.setdefault("Cache-Control", "no-store")
+    elif request.url.path.startswith("/static/"):
+        # Always re-check with the server (cheap: an unchanged file answers "not modified").
+        # Without this, browsers keep using old scripts after rackmap is updated.
+        response.headers["Cache-Control"] = "no-cache"
     return response
 
 

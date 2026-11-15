@@ -56,7 +56,10 @@ def test_front_end_and_headers():
         r = c.get("/")
         assert r.status_code == 200 and "rackmap" in r.text
         assert r.headers["x-frame-options"] == "DENY"
-        assert c.get("/static/app.js").status_code == 200
+        script = c.get("/static/app.js")
+        assert script.status_code == 200 and script.headers["cache-control"] == "no-cache"
+        # an unchanged file is not sent again
+        assert c.get("/static/app.js", headers={"If-None-Match": script.headers["etag"]}).status_code == 304
         assert c.get("/api/nope").status_code == 404
         # password hashes never leave the database in clear
         from rackmap import db
