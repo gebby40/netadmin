@@ -511,3 +511,111 @@ def test_kvm_as_equipment_offers_its_ports_to_the_rest():
         assert c.get("/api/overview").json()["kvms"][0]["device_id"] == other["id"]
     finally:
         c.__exit__(None, None, None)
+
+
+def test_pikvm_screen_keyboard_mouse_and_power():
+    import json as jsonlib
+    import sqlite3
+    import time
+
+    from fake_pikvm import JPEG, FakePiKVM
+    from rackmap import db, pikvm
+
+    # what the browser sends becomes only the event shapes PiKVM knows
+    assert pikvm.translate({"t": "key", "code": "KeyA", "down": True}) == [{"event_type": "key", "event": {"key": "KeyA", "state": True}}]
+    assert pikvm.translate({"t": "key", "code": "../../x", "down": True}) == []
+    assert pikvm.translate({"t": "move", "x": 0.5, "y": 0}) == [{"event_type": "mouse_move", "event": {"to": {"x": 0, "y": -32768}}}]
+    assert pikvm.translate({"t": "move", "x": 9, "y": "no"}) == []
+    assert pikvm.translate({"t": "button", "b": "fire", "down": True}) == []
+    assert [e["event"] for e in pikvm.translate({"t": "shortcut", "keys": ["ControlLeft", "AltLeft", "Delete"]})][2:4] == [
+        {"key": "Delete", "state": True}, {"key": "Delete", "state": False}]
+    assert pikvm.translate({"t": "raw", "event_type": "anything"}) == []
+
+    c = signed_in()
+    origin = {"origin": "http://testserver"}
+    try:
+        with FakePiKVM() as pi:
+            box = c.post("/api/devices", json={"name": "PiKVM", "u_height": 0}).json()
+            nas = c.post("/api/devices", json={"name": "NAS", "u_height": 2}).json()
+            body = {"name": "PiKVM", "kind": "pikvm", "url": pi.url, "port_count": 1, "device_id": box["id"], "username": "admin"}
+
+            # nothing is saved unless rackmap can sign in
+            r = c.post("/api/kvms", json={**body, "password": "wrong"})
+            assert r.status_code == 422 and "refused" in r.json()["detail"]
+            assert c.post("/api/kvms", json=body).status_code == 422  # no password at all
+            assert c.get("/api/overview").json()["kvms"] == []
+
+            kvm = c.post("/api/kvms", json={**body, "password": "kvm-secret"}).json()
+            assert kvm["live"] is True and "secret" not in kvm and "password" not in kvm and "cert_pem" not in kvm
+            raw = sqlite3.connect(db.DATA_DIR / "rackmap.db").execute("SELECT secret FROM kvms").fetchone()[0]
+            assert "kvm-secret" not in raw
+            # other details can change without re-entering the password
+            assert c.put(f"/api/kvms/{kvm['id']}", json={**body, "name": "PiKVM on the NAS"}).json()["live"] is True
+
+            port = kvm["ports"][0]["id"]
+            assert c.put(f"/api/devices/{nas['id']}/kvm-port", json={"port_id": port}).status_code == 200
+            mine = {d["name"]: d for d in c.get("/api/overview").json()["unplaced"]}["NAS"]["kvm_ports"][0]
+            assert mine["live"] is True and mine["id"] == port
+
+            url = f"/api/kvm-ports/{port}"
+            assert c.get(url).json()["device"] == "NAS"
+            shot = c.get(url + "/snapshot")
+            assert shot.content == JPEG and shot.headers["content-type"] == "image/jpeg"
+            stream = c.get(url + "/stream")
+            assert stream.headers["content-type"].startswith("multipart/x-mixed-replace") and stream.content.count(JPEG) == 3
+
+            assert c.get(url + "/power").json() == {"wired": True, "on": True, "busy": False}
+            assert c.post(url + "/power", json={"action": "hold"}).status_code == 200
+            assert c.post(url + "/power", json={"action": "explode"}).status_code == 502
+            assert pi.calls == [("/api/atx/click", "power_long")] and c.get(url + "/power").json()["on"] is False
+            assert c.post(url + "/text", json={"text": "hello\n"}).status_code == 200 and pi.typed == ["hello\n"]
+
+            # the screen's control connection: state comes back, input goes through translated
+            with c.websocket_connect(f"/ws/kvm/{port}", headers=origin) as ws:
+                assert jsonlib.loads(ws.receive_text())["state"] == "connecting"
+                opened = jsonlib.loads(ws.receive_text())
+                assert opened["state"] == "open" and opened["device"] == "NAS"
+                assert jsonlib.loads(ws.receive_text()) == {"state": "power", "wired": True, "on": False}
+                assert jsonlib.loads(ws.receive_text()) == {"state": "signal", "online": True}
+                assert pi.viewers == 1  # which is what keeps a real PiKVM's video running
+                ws.send_text(jsonlib.dumps({"t": "key", "code": "Enter", "down": True}))
+                ws.send_text("not json")
+                ws.send_text(jsonlib.dumps({"event_type": "key", "event": {"key": "Sneaky"}}))  # not passed through as-is
+                ws.send_text(jsonlib.dumps({"t": "button", "b": "left", "down": True}))
+                for _ in range(40):
+                    if len(pi.events) >= 2:
+                        break
+                    time.sleep(0.05)
+            assert pi.events == [{"event_type": "key", "event": {"key": "Enter", "state": True}},
+                                 {"event_type": "mouse_button", "event": {"button": "left", "state": True}}]
+            # a page on another site can't open the control connection
+            import pytest
+            from starlette.websockets import WebSocketDisconnect
+            with pytest.raises(WebSocketDisconnect):
+                with c.websocket_connect(f"/ws/kvm/{port}", headers={"origin": "http://evil.example"}):
+                    pass
+
+            # a multi-port PiKVM Switch is pointed at the right machine first, and its buttons are per port
+            c.put(f"/api/kvms/{kvm['id']}", json={**body, "port_count": 4})
+            ports = c.get("/api/overview").json()["kvms"][0]["ports"]
+            c.put(f"/api/devices/{nas['id']}/kvm-port", json={"port_id": ports[2]["id"]})
+            pi.calls.clear()
+            with c.websocket_connect(f"/ws/kvm/{ports[2]['id']}", headers=origin) as ws:
+                ws.receive_text()
+                assert jsonlib.loads(ws.receive_text())["state"] == "open"
+            c.post(f"/api/kvm-ports/{ports[2]['id']}/power", json={"action": "press"})
+            assert pi.calls == [("/api/switch/set_active", 2), ("/api/switch/atx/click", 2, "power")]
+
+        # a different certificate at the same address is refused before the password is sent
+        with FakePiKVM() as impostor:
+            sqlite3.connect(db.DATA_DIR / "rackmap.db").execute("UPDATE kvms SET url = ?", (impostor.url,)).connection.commit()
+            r = c.get(f"/api/kvm-ports/{ports[2]['id']}/snapshot")
+            assert r.status_code == 502 and "certificate" in r.json()["detail"]
+
+        # without an account a PiKVM is only a link, and the screen endpoints say so
+        plain = c.post("/api/devices", json={"name": "Other PiKVM", "u_height": 0}).json()
+        other = c.post("/api/kvms", json={"name": "Other PiKVM", "kind": "pikvm", "url": "https://10.3.0.50", "port_count": 1, "device_id": plain["id"]}).json()
+        assert other["live"] is False
+        assert c.get(f"/api/kvm-ports/{other['ports'][0]['id']}/snapshot").status_code == 422
+    finally:
+        c.__exit__(None, None, None)

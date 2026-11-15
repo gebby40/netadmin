@@ -159,6 +159,13 @@ MIGRATIONS: list[str] = [
         UNIQUE (kvm_id, number)
     );
     """,
+    """
+    -- Sign-in for KVMs rackmap can drive itself (PiKVM). `secret` is the password, encrypted
+    -- with the key in secret.key; `cert_pem` is the HTTPS certificate remembered on set-up.
+    ALTER TABLE kvms ADD COLUMN username TEXT NOT NULL DEFAULT '';
+    ALTER TABLE kvms ADD COLUMN secret TEXT NOT NULL DEFAULT '';
+    ALTER TABLE kvms ADD COLUMN cert_pem TEXT NOT NULL DEFAULT '';
+    """,
 ]
 
 _lock = threading.Lock()

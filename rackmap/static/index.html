@@ -154,6 +154,32 @@
     </section>
   </template>
 
+  <template id="t-screen">
+    <section class="home screen-view">
+      <section class="card term-card">
+        <div class="term-head">
+          <div>
+            <h1 id="screen-title">Remote screen</h1>
+            <p class="hint" id="screen-status" role="status">Connecting…</p>
+          </div>
+          <div class="buttons">
+            <button type="button" class="secondary" id="screen-cad">Ctrl+Alt+Del</button>
+            <button type="button" class="secondary" id="screen-type">Type text…</button>
+            <button type="button" class="secondary" id="screen-power">Power…</button>
+            <button type="button" class="secondary" id="screen-reconnect" hidden>Reconnect</button>
+            <button type="button" class="secondary" id="screen-close">Close</button>
+          </div>
+        </div>
+        <div class="screen" id="screen" tabindex="0" aria-label="Remote screen. Click it to take control; keys you press then go to the machine.">
+          <img id="screen-img" alt="" draggable="false">
+          <p class="screen-note" id="screen-note">Waiting for the picture…</p>
+        </div>
+        <p class="hint">Click the picture to take control: your keyboard and mouse then go to the machine. Click anywhere outside it to stop. A few combinations, such as Alt+Tab, Ctrl+W and the Windows key, are kept by your own computer and never reach it. <a id="screen-page" target="_blank" rel="noopener noreferrer">Open the KVM's own page</a></p>
+      </section>
+      <p class="foot">rackmap <span id="version"></span></p>
+    </section>
+  </template>
+
   <template id="t-consoles">
     <section class="home consoles">
       <div class="empty card" id="no-consoles" hidden>
@@ -242,13 +268,57 @@
       <label>Web address (optional)<input name="url" maxlength="300" autocomplete="off" placeholder="https://192.168.1.70" inputmode="url"></label>
       <p class="hint">The page you open to see its screens. rackmap links to it as the remote screen; the KVM asks for its own sign-in there. Leave empty for a KVM that isn't on the network.</p>
       <label>Number of ports<input name="port_count" type="number" min="1" max="64" value="1" inputmode="numeric"></label>
-      <p class="hint">How many machines it can be plugged into. A PiKVM on its own has one.</p>
+      <p class="hint">How many machines it can be plugged into. A PiKVM on its own has one; with a PiKVM Switch, the switch's number of ports.</p>
+      <div id="kvm-account" hidden>
+        <div class="row">
+          <label>PiKVM account (optional)<input name="username" maxlength="64" autocomplete="off" placeholder="admin"></label>
+          <label>Password<input name="password" type="password" maxlength="256" autocomplete="new-password"></label>
+        </div>
+        <p class="hint">With an account, rackmap shows the screen itself, with keyboard, mouse and power buttons. rackmap signs in to check before saving, and stores the password encrypted on this rackmap server. Without one, rackmap just links to the PiKVM's page.</p>
+        <p class="hint" id="kvm-pw-note" hidden>Leave the password empty to keep the saved one. Entering it again also accepts the PiKVM's current certificate.</p>
+      </div>
       <p class="error" id="kvm-error" role="alert" hidden></p>
       <div class="buttons">
         <button type="button" class="danger" id="kvm-delete" hidden>Remove</button>
         <span class="spacer"></span>
         <button type="button" class="secondary" data-close>Cancel</button>
         <button type="submit" class="primary" id="kvm-save">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="type-dialog">
+    <form method="dialog" id="type-form" novalidate>
+      <h1>Type text on the machine</h1>
+      <p class="hint">The KVM types this on the machine's keyboard, for a password or a long command. It is sent as typed keys, assuming a US keyboard layout on the machine.</p>
+      <label>Text<textarea name="text" rows="4" maxlength="4000" autocomplete="off" spellcheck="false"></textarea></label>
+      <label class="check"><input type="checkbox" name="enter"> Press Enter afterwards</label>
+      <p class="error" id="type-error" role="alert" hidden></p>
+      <div class="buttons">
+        <span class="spacer"></span>
+        <button type="button" class="secondary" data-close>Cancel</button>
+        <button type="submit" class="primary" id="type-send">Type it</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="power-dialog">
+    <form method="dialog" novalidate>
+      <h1>Power buttons</h1>
+      <p class="hint" id="power-now"></p>
+      <p class="hint">These press the machine's own front-panel buttons through the KVM. They only work if the KVM's power cable (ATX) is fitted to the machine.</p>
+      <div class="stack">
+        <button type="button" class="secondary" data-power="press">Press the power button</button>
+        <p class="hint">Switches the machine on. If it is running, asks it to shut down.</p>
+        <button type="button" class="danger" data-power="hold">Hold the power button</button>
+        <p class="hint">Forces it off. Anything unsaved on the machine is lost.</p>
+        <button type="button" class="danger" data-power="reset">Press the reset button</button>
+        <p class="hint">Restarts it at once, without shutting down first.</p>
+      </div>
+      <p class="error" id="power-error" role="alert" hidden></p>
+      <div class="buttons">
+        <span class="spacer"></span>
+        <button type="button" class="secondary" data-close>Close</button>
       </div>
     </form>
   </dialog>

@@ -57,6 +57,26 @@ get rid of the warning:
 `deploy/rackmap.service` is a systemd unit for a plain install under `/opt/rackmap` with
 data in `/var/lib/rackmap`.
 
+## Consoles, controllers and KVMs
+
+Three ways to reach a machine when its network is down, each set up from the equipment's
+details panel and each invisible until you have one:
+
+- **Console server** (Digi CM / Passport today): mark the equipment as a console server and
+  give it an address and sign-in. Every other piece of equipment then gets a *Console port*
+  choice, and a terminal to that serial port in the browser.
+- **Server controller** (Dell iDRAC, HPE iLO, Supermicro and others, over Redfish): power
+  state, health, power buttons and the serial-over-LAN text console.
+- **KVM**: mark the equipment as a KVM and say how many ports it has. Every other piece of
+  equipment then gets a *KVM port* choice. With a **PiKVM** and an account on it, rackmap shows
+  the screen itself (live picture, keyboard, mouse, typing text, and the power and reset
+  buttons if the PiKVM's ATX cable is fitted), including the ports of a PiKVM Switch. Any
+  other KVM with a web page is linked to; one without a network connection is simply recorded.
+
+Sign-in passwords for these are stored encrypted with a key kept in the data directory, and
+rackmap remembers each device's certificate or SSH key the first time and refuses a different
+one afterwards.
+
 ## Equipment database
 
 rackmap bundles a catalogue of about 14,000 device types (maker, model, height, depth and port

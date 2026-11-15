@@ -6,16 +6,18 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import asyncio
+import http.client
 import json
 import os
 from urllib.parse import urlsplit
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import __version__, auth, catalog, consoles, controllers, db, discovery, inventory, kvms, monitor
+from . import __version__, auth, catalog, consoles, controllers, db, discovery, inventory, kvms, monitor, pikvm
 
 STATIC = Path(__file__).parent / "static"
 
@@ -290,6 +292,10 @@ class KvmBody(BaseModel):
     url: str = Field(default="", max_length=300)
     port_count: int = Field(ge=1, le=kvms.MAX_PORTS)
     device_id: int
+    # PiKVM only: an account on it lets rackmap show the screen itself. An empty password
+    # when editing means "keep the saved one".
+    username: str = Field(default="", max_length=64)
+    password: str = Field(default="", max_length=256)
 
 
 @app.exception_handler(kvms.Invalid)
@@ -311,6 +317,138 @@ def kvm_update(kvm_id: int, body: KvmBody, _user: dict = Depends(current_user)) 
 def kvm_delete(kvm_id: int, _user: dict = Depends(current_user)) -> dict:
     kvms.delete(kvm_id)
     return {"ok": True}
+
+
+@app.exception_handler(pikvm.KvmError)
+async def kvm_failed(_request: Request, exc: pikvm.KvmError) -> JSONResponse:
+    return JSONResponse(status_code=502, content={"detail": str(exc)})
+
+
+class KvmPowerBody(BaseModel):
+    action: str = Field(max_length=20)
+
+
+class KvmTextBody(BaseModel):
+    text: str = Field(min_length=1, max_length=4000)
+
+
+@app.get("/api/kvm-ports/{port_id}")
+def kvm_port_about(port_id: int, _user: dict = Depends(current_user)) -> dict:
+    return kvms.live_port(port_id)[2]
+
+
+@app.get("/api/kvm-ports/{port_id}/snapshot")
+def kvm_port_snapshot(port_id: int, _user: dict = Depends(current_user)) -> Response:
+    """One still picture of the screen; the page falls back to these if the live stream fails."""
+    return Response(kvms.live_port(port_id)[0].snapshot(), media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/kvm-ports/{port_id}/stream")
+def kvm_port_stream(port_id: int, _user: dict = Depends(current_user)) -> StreamingResponse:
+    """The KVM's live picture (MJPEG), passed straight through."""
+    conn, upstream = kvms.live_port(port_id)[0].open_stream()
+
+    def frames():
+        try:
+            while True:
+                chunk = upstream.read1(65536)
+                if not chunk:
+                    break
+                yield chunk
+        except (OSError, http.client.HTTPException):
+            pass
+        finally:
+            conn.close()
+
+    return StreamingResponse(frames(), media_type=upstream.getheader("Content-Type") or "multipart/x-mixed-replace",
+                             headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/kvm-ports/{port_id}/power")
+def kvm_port_power_state(port_id: int, _user: dict = Depends(current_user)) -> dict:
+    client, switch_port, _about = kvms.live_port(port_id)
+    if switch_port is not None:
+        return {"wired": True, "on": None, "busy": False}  # a multi-port switch doesn't report one machine's light here
+    return client.power_state()
+
+
+@app.post("/api/kvm-ports/{port_id}/power")
+def kvm_port_power(port_id: int, body: KvmPowerBody, _user: dict = Depends(current_user)) -> dict:
+    client, switch_port, _about = kvms.live_port(port_id)
+    client.power(body.action, switch_port)
+    return {"ok": True}
+
+
+@app.post("/api/kvm-ports/{port_id}/text")
+def kvm_port_text(port_id: int, body: KvmTextBody, _user: dict = Depends(current_user)) -> dict:
+    """Type a piece of text on the machine, as if on its keyboard."""
+    kvms.live_port(port_id)[0].type_text(body.text)
+    return {"ok": True}
+
+
+@app.websocket("/ws/kvm/{port_id}")
+async def kvm_socket(websocket: WebSocket, port_id: int) -> None:
+    """Keyboard and mouse for an open screen. While this is connected the KVM keeps capturing
+    video; what the browser sends is translated into the few event shapes PiKVM understands."""
+    if not _same_origin(websocket) or not auth.session_user(websocket.cookies.get(auth.SESSION_COOKIE)):
+        await websocket.close(code=4401)
+        return
+    await websocket.accept()
+
+    async def say(state: str, **more) -> None:
+        await websocket.send_text(json.dumps({"state": state, **more}))
+
+    upstream = None
+    try:
+        await say("connecting")
+        try:
+            client, switch_port, about = kvms.live_port(port_id)
+            if switch_port is not None:
+                await run_in_threadpool(client.select_port, switch_port)
+            upstream = await client.events()
+        except (kvms.Invalid, pikvm.KvmError) as exc:
+            await say("failed", message=str(exc))
+            return
+        await say("open", **about)
+
+        async def from_browser() -> None:
+            while True:
+                try:
+                    message = json.loads(await websocket.receive_text())
+                except ValueError:
+                    continue
+                if isinstance(message, dict):
+                    for event in pikvm.translate(message):
+                        await upstream.send(json.dumps(event))
+
+        async def from_kvm() -> None:
+            async for raw in upstream:
+                try:
+                    note = pikvm.summarize(json.loads(raw)) if isinstance(raw, str) else None
+                except ValueError:
+                    note = None
+                if note:
+                    await websocket.send_text(json.dumps(note))
+            await say("closed", message="The KVM closed the connection.")
+
+        tasks = [asyncio.create_task(from_browser()), asyncio.create_task(from_kvm())]
+        _done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        for task in pending:
+            task.cancel()
+        for task in tasks:
+            try:
+                await task
+            except (asyncio.CancelledError, WebSocketDisconnect, Exception):  # noqa: BLE001 - either side going away ends the session
+                pass
+    except WebSocketDisconnect:
+        pass
+    finally:
+        if upstream is not None:
+            await upstream.close()
+        try:
+            await websocket.close()
+        except (RuntimeError, WebSocketDisconnect):
+            pass  # the browser had already gone
 
 
 class DevicePortBody(BaseModel):

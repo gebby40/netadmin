@@ -4,7 +4,7 @@ const main = document.getElementById("main");
 const bar = document.getElementById("bar");
 const $ = (id) => document.getElementById(id);
 
-const state = { version: "", view: "racks", racks: [], unplaced: [], rackId: null, face: "front", selectedId: null, newFound: 0, live: {}, discovery: null, showIgnored: false, consoles: [], kinds: {}, kvms: [], kvmKinds: {}, openPort: null };
+const state = { version: "", view: "racks", racks: [], unplaced: [], rackId: null, face: "front", selectedId: null, newFound: 0, live: {}, discovery: null, showIgnored: false, consoles: [], kinds: {}, kvms: [], kvmKinds: {}, openPort: null, screenPort: null };
 
 /* ---------- talking to the server ---------- */
 
@@ -480,6 +480,7 @@ function kvmSection(device) {
         h("button", { type: "button", class: "link", onclick: () => { state.selectedId = port.device.id; render(); } },
           own.port_count > 1 ? `Port ${port.number}: ${port.device.name}` : port.device.name)))) : null,
       h("div", { class: "buttons" },
+        own.live && own.port_count === 1 ? h("button", { type: "button", class: "primary", onclick: () => openScreen(own.ports[0].id) }, "Open remote screen") : null,
         own.url ? screenLink(own.url, "Open KVM page") : null,
         h("button", { type: "button", class: "secondary", onclick: () => openKvmDialog(device, own) }, "Edit KVM")));
   }
@@ -489,12 +490,16 @@ function kvmSection(device) {
     .filter((port) => !port.device || port.device.id === device.id)
     .map((port) => ({ id: port.id, text: kvmPortName(kvm, port.number) })));
   const linked = mine.filter((port) => port.url);
+  const live = linked.filter((port) => port.live);
+  const outside = linked.filter((port) => !port.live);
   return h("section", { class: "controller" },
     h("h2", { text: "Remote screen" }),
     portChoice("KVM port", "device-kvm-port", choices, mine.length ? mine[0].id : null, `/api/devices/${device.id}/kvm-port`),
-    linked.length ? h("div", { class: "buttons" }, linked.map((port) => screenLink(port.url, "Open remote screen"))) : null,
+    linked.length ? h("div", { class: "buttons" },
+      live.map((port) => h("button", { type: "button", class: "primary", onclick: () => openScreen(port.id) }, "Open remote screen")),
+      outside.map((port) => screenLink(port.url, "Open remote screen"))) : null,
     mine.length && !linked.length ? h("p", { class: "hint", text: "This KVM has no web address, so there is nothing to open from here." }) : null,
-    linked.length && linked[0].port_count > 1 ? h("p", { class: "hint", text: `Opens ${linked[0].kvm_name}; choose port ${linked[0].number} there.` }) : null);
+    outside.length && outside[0].port_count > 1 ? h("p", { class: "hint", text: `Opens ${outside[0].kvm_name}; choose port ${outside[0].number} there.` }) : null);
 }
 
 let editingKvm = null;
@@ -508,8 +513,9 @@ function openKvmDialog(device, kvm) {
   $("kvm-kind").replaceChildren(...Object.entries(state.kvmKinds).map(([value, label]) => h("option", { value }, label)));
   $("kvm-dialog-title").textContent = kvm ? `KVM “${kvm.name}”` : `Set up “${device.name}” as a KVM`;
   $("kvm-delete").hidden = !kvm;
+  $("kvm-pw-note").hidden = !(kvm && kvm.live);
   if (kvm) {
-    for (const key of ["name", "kind", "url", "port_count"]) form.elements[key].value = kvm[key];
+    for (const key of ["name", "kind", "url", "port_count", "username"]) form.elements[key].value = kvm[key];
   } else {
     form.elements.name.value = device.name.slice(0, 80);
     const guess = /pi-?kvm/i.test(device.name) ? "pikvm" : /dell/i.test(`${device.name} ${device.manufacturer}`) ? "dell" : "other";
@@ -517,6 +523,7 @@ function openKvmDialog(device, kvm) {
     form.elements.port_count.value = guess === "pikvm" ? 1 : 8;
     if (device.ip) form.elements.url.value = `https://${device.ip}`;
   }
+  $("kvm-account").hidden = form.elements.kind.value !== "pikvm";
   setError("kvm-error", "");
   $("kvm-dialog").showModal();
   form.elements.name.focus();
@@ -526,10 +533,14 @@ $("kvm-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   const form = event.target;
   const body = { name: form.elements.name.value.trim(), kind: form.elements.kind.value, url: form.elements.url.value.trim(),
-    port_count: Number(form.elements.port_count.value), device_id: kvmDevice.id };
+    port_count: Number(form.elements.port_count.value), device_id: kvmDevice.id,
+    username: form.elements.kind.value === "pikvm" ? form.elements.username.value.trim() : "", password: form.elements.password.value };
   if (!body.name) return setError("kvm-error", "Give the KVM a name.");
   if (!(body.port_count >= 1 && body.port_count <= 64)) return setError("kvm-error", "A KVM has between 1 and 64 ports.");
+  if (body.username && !body.url) return setError("kvm-error", "Enter the PiKVM's web address so rackmap can sign in to it.");
+  if (body.username && !body.password && !(editingKvm && editingKvm.live)) return setError("kvm-error", "Enter the password for that account.");
   $("kvm-save").disabled = true;
+  if (body.username) $("kvm-save").textContent = "Signing in to check…";
   try {
     if (editingKvm) await api(`/api/kvms/${editingKvm.id}`, body, "PUT"); else await api("/api/kvms", body);
     $("kvm-dialog").close("");
@@ -538,8 +549,11 @@ $("kvm-form").addEventListener("submit", async (event) => {
     setError("kvm-error", err.message);
   } finally {
     $("kvm-save").disabled = false;
+    $("kvm-save").textContent = "Save";
   }
 });
+
+$("kvm-kind").addEventListener("change", (event) => { $("kvm-account").hidden = event.target.value !== "pikvm"; });
 
 $("kvm-delete").addEventListener("click", async () => {
   const kvm = editingKvm;
@@ -1306,6 +1320,212 @@ $("controller-delete").addEventListener("click", async () => {
   } catch (err) { await failed(err); }
 });
 
+/* ---------- remote screen (PiKVM) ---------- */
+
+let screenSocket = null;
+let screenTimer = null;
+let screenMoveTimer = null;
+let screenPending = null;
+const screenKeys = new Set();
+
+function openScreen(portId) {
+  state.view = "screen";
+  state.screenPort = portId;
+  showView();
+}
+
+function screenSend(message) {
+  if (screenSocket && screenSocket.readyState === WebSocket.OPEN) screenSocket.send(JSON.stringify(message));
+}
+
+function releaseScreenKeys() {
+  for (const code of screenKeys) screenSend({ t: "key", code, down: false });
+  screenKeys.clear();
+}
+
+function closeScreen() {
+  clearTimeout(screenTimer);
+  clearTimeout(screenMoveTimer);
+  screenPending = null;
+  if (screenSocket) {
+    releaseScreenKeys();
+    const socket = screenSocket;
+    screenSocket = null;
+    socket.onclose = null;
+    socket.close();
+  }
+  const img = $("screen-img");
+  if (img) { img.onerror = null; img.onload = null; img.removeAttribute("src"); }  // ends the live stream
+}
+
+function setScreenStatus(text, canReconnect) {
+  if (!$("screen-status")) return;
+  $("screen-status").textContent = text;
+  $("screen-reconnect").hidden = !canReconnect;
+}
+
+// The picture: the KVM's live stream, or (if the browser can't show that) a fresh still every moment.
+function startPicture(portId) {
+  const img = $("screen-img");
+  const note = $("screen-note");
+  const stills = () => {
+    if (state.view !== "screen" || state.screenPort !== portId || !screenSocket) return;
+    img.onload = () => { note.hidden = true; screenTimer = setTimeout(stills, 400); };
+    img.onerror = () => { note.hidden = false; note.textContent = "No picture from the KVM right now. Trying again…"; screenTimer = setTimeout(stills, 3000); };
+    img.src = `/api/kvm-ports/${portId}/snapshot?t=${Date.now()}`;
+  };
+  img.onload = () => { note.hidden = true; };
+  img.onerror = stills;
+  img.src = `/api/kvm-ports/${portId}/stream?t=${Date.now()}`;
+}
+
+function connectScreen() {
+  const portId = state.screenPort;
+  closeScreen();
+  setScreenStatus("Connecting…", false);
+  const socket = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/kvm/${portId}`);
+  screenSocket = socket;
+  let power = "";
+  let signal = "";
+  const describe = () => setScreenStatus(["Connected.", power, signal].filter(Boolean).join(" "), false);
+  socket.onmessage = (event) => {
+    let note;
+    try { note = JSON.parse(event.data); } catch { return; }
+    if (note.state === "open") {
+      $("screen-title").textContent = note.device ? `${note.device} · screen` : `${note.kvm} · screen`;
+      if (note.url) $("screen-page").href = note.url;
+      describe();
+      startPicture(portId);
+    } else if (note.state === "power") {
+      power = note.wired ? (note.on ? "The machine is on." : "The machine is off.") : "";
+      describe();
+    } else if (note.state === "signal") {
+      signal = note.online ? "" : "No video signal: the machine may be off or asleep.";
+      describe();
+    } else if (note.state === "failed" || note.state === "closed") {
+      setScreenStatus(note.message || "The connection closed.", true);
+    }
+  };
+  socket.onclose = () => {
+    if (screenSocket !== socket) return;
+    screenSocket = null;
+    clearTimeout(screenTimer);
+    if ($("screen-reconnect") && $("screen-reconnect").hidden) setScreenStatus("Disconnected.", true);
+  };
+}
+
+function screenPoint(event) {
+  const rect = $("screen-img").getBoundingClientRect();
+  if (!rect.width || !rect.height) return null;
+  return { x: Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width)), y: Math.min(1, Math.max(0, (event.clientY - rect.top) / rect.height)) };
+}
+
+const SCREEN_BUTTONS = ["left", "middle", "right"];
+
+function screenScreen() {
+  show("t-screen");
+  $("version").textContent = state.version;
+  const area = $("screen");
+  const img = $("screen-img");
+  $("screen-close").addEventListener("click", () => { closeScreen(); state.view = "racks"; showView(); });
+  $("screen-reconnect").addEventListener("click", connectScreen);
+  $("screen-cad").addEventListener("click", () => { screenSend({ t: "shortcut", keys: ["ControlLeft", "AltLeft", "Delete"] }); area.focus(); });
+  $("screen-type").addEventListener("click", () => { $("type-form").reset(); setError("type-error", ""); $("type-dialog").showModal(); });
+  $("screen-power").addEventListener("click", openPowerDialog);
+
+  area.addEventListener("keydown", (event) => {
+    event.preventDefault();
+    if (event.repeat || !event.code) return;  // the machine repeats a held key by itself
+    screenKeys.add(event.code);
+    screenSend({ t: "key", code: event.code, down: true });
+  });
+  area.addEventListener("keyup", (event) => {
+    event.preventDefault();
+    if (!event.code) return;
+    screenKeys.delete(event.code);
+    screenSend({ t: "key", code: event.code, down: false });
+  });
+  area.addEventListener("blur", releaseScreenKeys);
+
+  img.addEventListener("mousemove", (event) => {
+    if (document.activeElement !== area) return;
+    screenPending = screenPoint(event);
+    if (screenMoveTimer) return;  // at most one position every 30 ms, always the latest
+    screenMoveTimer = setTimeout(() => {
+      screenMoveTimer = null;
+      if (screenPending) screenSend({ t: "move", ...screenPending });
+      screenPending = null;
+    }, 30);
+  });
+  let taking = false;
+  const button = (down) => (event) => {
+    event.preventDefault();
+    if (down && document.activeElement !== area) {  // the first click only takes control; it isn't passed on
+      area.focus();
+      taking = true;
+      return;
+    }
+    if (taking) { if (!down) taking = false; return; }
+    const point = screenPoint(event);
+    const name = SCREEN_BUTTONS[event.button];
+    if (!point || !name) return;
+    screenSend({ t: "move", ...point });
+    screenSend({ t: "button", b: name, down });
+  };
+  img.addEventListener("mousedown", button(true));
+  img.addEventListener("mouseup", button(false));
+  img.addEventListener("contextmenu", (event) => event.preventDefault());
+  img.addEventListener("wheel", (event) => {
+    if (document.activeElement !== area) return;
+    event.preventDefault();
+    screenSend({ t: "wheel", dy: event.deltaY > 0 ? -5 : 5 });
+  }, { passive: false });
+}
+
+$("type-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = event.target;
+  const text = form.elements.text.value + (form.elements.enter.checked ? "\n" : "");
+  if (!text) return setError("type-error", "Enter the text to type.");
+  $("type-send").disabled = true;
+  try {
+    await api(`/api/kvm-ports/${state.screenPort}/text`, { text });
+    $("type-dialog").close("");
+    form.reset();
+    if ($("screen")) $("screen").focus();
+  } catch (err) {
+    setError("type-error", err.message);
+  } finally {
+    $("type-send").disabled = false;
+  }
+});
+
+async function openPowerDialog() {
+  setError("power-error", "");
+  $("power-now").textContent = "";
+  $("power-dialog").showModal();
+  try {
+    const now = await api(`/api/kvm-ports/${state.screenPort}/power`);
+    $("power-now").textContent = !now.wired ? "The KVM reports that its power cable isn't in use."
+      : now.on === null ? "" : now.on ? "The machine's power light is on." : "The machine's power light is off.";
+  } catch (err) { setError("power-error", err.message); }
+}
+
+for (const button of document.querySelectorAll("#power-dialog [data-power]")) {
+  button.addEventListener("click", async () => {
+    button.disabled = true;
+    setError("power-error", "");
+    try {
+      await api(`/api/kvm-ports/${state.screenPort}/power`, { action: button.dataset.power });
+      $("power-dialog").close("");
+    } catch (err) {
+      setError("power-error", err.message);
+    } finally {
+      button.disabled = false;
+    }
+  });
+}
+
 /* ---------- start-up ---------- */
 
 function racksScreen() {
@@ -1324,9 +1544,13 @@ async function showView() {
   clearTimeout(scanTimer);
   clearTimeout(liveTimer);
   if (state.view !== "consoles" || !$("term-card")) { const keep = state.view === "consoles" ? state.openPort : null; closeTerminal(); state.openPort = keep; }
+  if (state.view !== "screen") closeScreen();
   renderNav();
   try {
-    if (state.view === "discovery") {
+    if (state.view === "screen") {
+      screenScreen();
+      connectScreen();
+    } else if (state.view === "discovery") {
       discoveryScreen();
       await loadDiscovery(true);
     } else if (state.view === "consoles") {
@@ -1372,6 +1596,7 @@ async function start() {
 
 $("sign-out").addEventListener("click", async () => {
   closeTerminal();
+  closeScreen();
   try { await api("/api/logout", {}); } catch (err) { /* signed out either way */ }
   await start();
 });
