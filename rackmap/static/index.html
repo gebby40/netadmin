@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>rackmap</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="bar" id="bar" hidden>
+    <div class="brand"><span class="mark" aria-hidden="true"></span>rackmap</div>
+    <div class="who">
+      <span id="who-name"></span>
+      <button class="link" id="sign-out" type="button">Sign out</button>
+    </div>
+  </header>
+
+  <main id="main" aria-live="polite">
+    <p class="loading">Loading…</p>
+  </main>
+
+  <template id="t-setup">
+    <section class="card narrow">
+      <div class="brand big"><span class="mark" aria-hidden="true"></span>rackmap</div>
+      <h1>Create the administrator account</h1>
+      <p class="hint">This is the first time rackmap has been opened. The account you create here is the only one that can sign in.</p>
+      <form id="form" novalidate>
+        <label>Name<input name="name" autocomplete="username" required maxlength="64" autofocus></label>
+        <label>Password<input name="password" type="password" autocomplete="new-password" required minlength="10" maxlength="256"></label>
+        <label>Password again<input name="confirm" type="password" autocomplete="new-password" required maxlength="256"></label>
+        <p class="hint">At least 10 characters.</p>
+        <p class="error" id="error" role="alert" hidden></p>
+        <button type="submit" class="primary">Create account</button>
+      </form>
+    </section>
+  </template>
+
+  <template id="t-login">
+    <section class="card narrow">
+      <div class="brand big"><span class="mark" aria-hidden="true"></span>rackmap</div>
+      <h1>Sign in</h1>
+      <form id="form" novalidate>
+        <label>Name<input name="name" autocomplete="username" required maxlength="64" autofocus></label>
+        <label>Password<input name="password" type="password" autocomplete="current-password" required maxlength="256"></label>
+        <p class="error" id="error" role="alert" hidden></p>
+        <button type="submit" class="primary">Sign in</button>
+      </form>
+    </section>
+  </template>
+
+  <template id="t-home">
+    <section class="home">
+      <h1>Your network</h1>
+      <div class="grid">
+        <article class="card">
+          <h2>Racks</h2>
+          <p class="count" id="n-racks">0</p>
+          <p class="hint">No racks yet. The rack view arrives in the next version.</p>
+        </article>
+        <article class="card">
+          <h2>Equipment</h2>
+          <p class="count" id="n-devices">0</p>
+          <p class="hint">Nothing recorded yet. Discovery will find equipment and ask where it sits.</p>
+        </article>
+        <article class="card">
+          <h2>Consoles</h2>
+          <p class="count" id="n-consoles">0</p>
+          <p class="hint">No console server connected yet.</p>
+        </article>
+      </div>
+      <p class="foot">rackmap <span id="version"></span></p>
+    </section>
+  </template>
+
+  <script src="/static/app.js" defer></script>
+</body>
+</html>
