@@ -17,6 +17,7 @@ import json
 import re
 import socket
 import ssl
+import time
 from urllib.parse import urlencode, urlsplit
 
 TIMEOUT = 12
@@ -146,8 +147,22 @@ class Client:
             raise KvmError("The KVM has no picture to give right now.")
         return raw
 
-    def open_stream(self) -> tuple[http.client.HTTPConnection, http.client.HTTPResponse]:
-        """The live MJPEG stream. The caller reads the response and closes the connection."""
+    def open_stream(self, patience: float = 8.0) -> tuple[http.client.HTTPConnection, http.client.HTTPResponse]:
+        """The live MJPEG stream. The caller reads the response and closes the connection.
+
+        A PiKVM starts capturing video only when someone connects to its event WebSocket, and
+        takes a second or two to do so; until then the stream address answers with an error.
+        So a refusal is retried for a short while before it counts."""
+        deadline = time.monotonic() + patience
+        while True:
+            try:
+                return self._open_stream_once()
+            except KvmError as exc:
+                if "name and password" in str(exc) or "certificate" in str(exc) or time.monotonic() + 0.6 > deadline:
+                    raise
+                time.sleep(0.6)
+
+    def _open_stream_once(self) -> tuple[http.client.HTTPConnection, http.client.HTTPResponse]:
         conn = self._connect(timeout=30)
         try:
             conn.request("GET", "/streamer/stream", headers=self._headers)

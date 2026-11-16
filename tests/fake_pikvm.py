@@ -24,6 +24,8 @@ class FakePiKVM:
         self.typed: list[str] = []
         self.power_on = True
         self.viewers = 0
+        self.stream_tries = 0
+        self.stream_refusals = 0
         self.port = None
         self._dir = tempfile.mkdtemp(prefix="fake-pikvm-")
         self._server = None
@@ -76,6 +78,9 @@ class FakePiKVM:
 
         @app.get("/streamer/stream")
         def stream():
+            outer.stream_tries += 1
+            if outer.stream_tries <= outer.stream_refusals:
+                return JSONResponse({"ok": False}, status_code=502)  # like a real one whose capture hasn't started yet
             def frames():
                 for _ in range(3):
                     yield b"--boundarydonotcross\r\nContent-Type: image/jpeg\r\nContent-Length: %d\r\n\r\n" % len(JPEG) + JPEG + b"\r\n"

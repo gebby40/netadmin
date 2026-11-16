@@ -566,8 +566,10 @@ def test_pikvm_screen_keyboard_mouse_and_power():
             assert c.get(url).json()["device"] == "NAS"
             shot = c.get(url + "/snapshot")
             assert shot.content == JPEG and shot.headers["content-type"] == "image/jpeg"
+            pi.stream_refusals = 2  # capture takes a moment to start on a real PiKVM; rackmap waits for it
             stream = c.get(url + "/stream")
             assert stream.headers["content-type"].startswith("multipart/x-mixed-replace") and stream.content.count(JPEG) == 3
+            assert pi.stream_tries == 3
 
             assert c.get(url + "/power").json() == {"wired": True, "on": True, "busy": False}
             assert c.post(url + "/power", json={"action": "hold"}).status_code == 200
