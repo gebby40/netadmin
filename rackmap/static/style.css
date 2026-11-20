@@ -7,6 +7,7 @@
   --accent: #0f6b57;
   --accent-ink: #ffffff;
   --danger: #a3261f;
+  --warn: #8a5a00;
   --rail: #2a302d;
   --radius: 10px;
   --font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
@@ -23,6 +24,7 @@
     --accent: #4fc3a6;
     --accent-ink: #08221c;
     --danger: #ff8a80;
+    --warn: #f0c04f;
     --rail: #0c0e0d;
   }
 }
@@ -545,6 +547,21 @@ progress { width: 100%; height: 8px; accent-color: var(--accent); }
 .dot.up { background: #2e9e7f; }
 .dot.down { background: none; box-shadow: inset 0 0 0 2px var(--danger); }
 .down-text { color: var(--danger); }
+.dot.warn { background: #d99a00; }
+.dot.alert { background: var(--danger); }
+.warn-text { color: var(--warn); }
+.pill.warn { background: #d99a00; color: #1c1400; }
+.pill.alert { background: var(--danger); color: var(--surface); }
+.badge.alert { background: var(--danger); color: var(--surface); }
+.plain-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; font-size: 0.92rem; }
+.plain-list.log li { overflow-wrap: anywhere; }
+.facts.sensors { font-size: 0.9rem; }
+.graphs { display: grid; gap: 12px; }
+.graphs figure { margin: 0; display: grid; gap: 4px; }
+.graphs figcaption { font-size: 0.85rem; color: var(--muted); }
+.graphs img { width: 100%; height: auto; border: 1px solid var(--line); border-radius: 8px; background: #ffffff; }
+.controller .link[aria-pressed="true"] { font-weight: 700; text-decoration: none; }
+.monitoring #found h2 { margin: 18px 0 8px; }
 
 .controller { border-top: 1px solid var(--line); padding-top: 14px; margin: 0 0 16px; display: grid; gap: 10px; }
 .controller p { margin: 0; }

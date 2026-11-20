@@ -9,7 +9,8 @@ Self-hosted network and rack manager. It is being built in stages:
 | 3 | Network discovery that asks where each device sits | done |
 | 4 | Browser terminals through a console server (Digi CM first) | done |
 | 5 | Server panel (power, health, text console, KVM link) and live up/down status | done |
-| 6 | Remote access over Tailscale | next |
+| 6 | Health, alerts and graphs from a monitoring system (LibreNMS first) | first part done |
+| 7 | Remote access over Tailscale | next |
 
 Nothing about any particular network is built in. Devices, addresses and credentials are
 entered or discovered through the app and stored in its data directory.
@@ -146,6 +147,27 @@ on, Shut down, Restart and Force off, each behind a confirmation.
 Equipment with a private IP address is checked about once a minute (a ping, then a few common
 ports). The rack view shows a filled dot for answering and a hollow red one for not answering.
 Set `RACKMAP_MONITOR=0` to switch this off.
+
+## Monitoring source
+
+If you already run a monitoring system, rackmap can show what it knows on the equipment recorded
+here. Open Monitoring, choose Connect a monitoring system, and give its address and an API token.
+LibreNMS is supported today; a read-only account's token is enough, and rackmap never changes
+anything there.
+
+- **Rack view:** the dot beside each piece of equipment becomes green (healthy), amber (a
+  warning is open) or red (an alert is open, or it is not answering the monitoring system).
+- **Details panel:** a Health section with what the device reports as, how long it has been
+  running, connected ports and traffic, sensor readings (temperatures, fans, power), open
+  alerts, day or week graphs and recent log lines.
+- **Monitoring page:** everything that currently needs attention, worst first, and the devices
+  the monitoring system watches that are not recorded in rackmap yet.
+
+Equipment is matched to monitored devices by IP address, then by name. Under Health, "Monitored
+as" sets the match by hand or switches it off for one piece of equipment. rackmap keeps only a
+short-lived copy of the answers; the history stays in the monitoring system. The token is stored
+the same way as other saved passwords. An HTTPS certificate that can't be verified the usual way
+is remembered when the source is connected, and a different one is refused afterwards.
 
 ## Data
 

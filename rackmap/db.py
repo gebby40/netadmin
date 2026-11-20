@@ -166,6 +166,14 @@ MIGRATIONS: list[str] = [
     ALTER TABLE kvms ADD COLUMN secret TEXT NOT NULL DEFAULT '';
     ALTER TABLE kvms ADD COLUMN cert_pem TEXT NOT NULL DEFAULT '';
     """,
+    """
+    -- Which device in the monitoring source a piece of equipment is, when set by hand.
+    -- An empty source_key means "not monitored". No row: matched by address, then name.
+    CREATE TABLE monitor_links (
+        device_id INTEGER PRIMARY KEY REFERENCES devices(id) ON DELETE CASCADE,
+        source_key TEXT NOT NULL
+    );
+    """,
 ]
 
 _lock = threading.Lock()

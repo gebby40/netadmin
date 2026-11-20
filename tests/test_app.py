@@ -12,10 +12,10 @@ from rackmap import __version__
 def make_client():
     os.environ["RACKMAP_DATA"] = tempfile.mkdtemp(prefix="rackmap-test-")
     os.environ["RACKMAP_MONITOR"] = "0"  # tests drive the monitor by hand
-    from rackmap import app as app_module, auth, catalog, consoles, controllers, db, discovery, inventory, monitor, secrets_store
+    from rackmap import app as app_module, auth, catalog, consoles, controllers, db, discovery, inventory, monitor, monitoring, secrets_store
 
     db.close()
-    for module in (db, secrets_store, auth, catalog, inventory, discovery, consoles, controllers, monitor, app_module):
+    for module in (db, secrets_store, auth, catalog, inventory, discovery, consoles, controllers, monitor, monitoring, app_module):
         importlib.reload(module)
     return TestClient(app_module.app)
 
@@ -625,4 +625,76 @@ def test_pikvm_screen_keyboard_mouse_and_power():
         assert other["live"] is False
         assert c.get(f"/api/kvm-ports/{other['ports'][0]['id']}/snapshot").status_code == 422
     finally:
+        c.__exit__(None, None, None)
+
+
+def test_monitoring_source_health_alerts_and_links():
+    from fake_librenms import FakeLibreNMS
+    from rackmap import db, monitoring
+
+    c = signed_in()
+    fake = FakeLibreNMS()
+    port = fake.start()
+    try:
+        # nothing shows until a source is set up
+        assert c.get("/api/monitoring").json()["source"] is None
+        assert c.get("/api/overview").json()["monitoring"] is False
+        assert c.get("/api/live").json()["health"] == {}
+
+        url = f"http://127.0.0.1:{port}"
+        assert c.put("/api/monitoring", json={"url": url}).status_code == 422            # a token is needed
+        assert c.put("/api/monitoring", json={"url": "ftp://x", "token": "t"}).status_code == 422
+        refused = c.put("/api/monitoring", json={"url": url, "token": "wrong"})
+        assert refused.status_code == 502 and "token" in refused.json()["detail"]
+        assert c.get("/api/monitoring").json()["source"] is None                           # a failed check saves nothing
+        saved = c.put("/api/monitoring", json={"url": url + "/", "token": "lnms-token"})
+        assert saved.status_code == 200 and saved.json()["source"] == {"kind": "librenms", "url": url, "pinned": False, "says": "LibreNMS 26.11.0"}
+        assert "lnms-token" not in saved.text and "lnms-token" not in db.get_setting("monitoring")  # stored sealed, never sent back
+        assert c.get("/api/overview").json()["monitoring"] is True
+
+        switch = c.post("/api/devices", json={"name": "switch", "u_height": 1, "ip": "192.168.7.2"}).json()   # matched by address
+        nas = c.post("/api/devices", json={"name": "NAS", "u_height": 2}).json()                              # matched by name (nas.lan)
+        printer = c.post("/api/devices", json={"name": "printer", "u_height": 0}).json()                      # not monitored
+        live = c.get("/api/live").json()
+        assert live["health"][str(switch["id"])] == {"level": "warning", "why": "Port Speed Degraded"}
+        assert live["health"][str(nas["id"])]["level"] == "alert" and str(printer["id"]) not in live["health"]
+        assert live["alerts"] == 2
+
+        view = c.get("/api/monitoring").json()
+        assert [(a["device_id"], a["level"]) for a in view["alerts"]] == [(nas["id"], "alert"), (switch["id"], "warning")]
+        assert [u["name"] for u in view["unmatched"]] == ["Access point"] and view["state"]["matched"] == 2
+
+        health = c.get(f"/api/devices/{switch['id']}/health").json()
+        assert health["matched"]["name"] == "Core switch" and health["matched"]["level"] == "warning" and health["link"] is None
+        assert health["sensors"][0] == {"kind": "temperature", "label": "Board", "value": 71.5, "unit": "°C", "level": "alert"}
+        assert [s["label"] for s in health["sensors"]] == ["Board", "Fan 1"]                 # only this device's readings
+        assert health["ports"] == {"total": 2, "up": 1, "in_bps": 8000, "out_bps": 4000, "errors": 3}
+        assert health["graphs"] == [{"name": "device_bits", "title": "Traffic"}]
+        assert {e["kind"] for e in health["events"]} == {"event", "log"}
+        assert c.get(f"/api/devices/{printer['id']}/health").json()["matched"] is None
+
+        picture = c.get(f"/api/devices/{switch['id']}/health/graph", params={"name": "device_bits", "period": "week"})
+        assert picture.status_code == 200 and picture.headers["content-type"].startswith("image/svg+xml") and "sandbox" in picture.headers["content-security-policy"]
+        assert c.get(f"/api/devices/{switch['id']}/health/graph", params={"name": "../../system"}).status_code == 422
+        assert c.get(f"/api/devices/{printer['id']}/health/graph", params={"name": "device_bits"}).status_code == 422
+
+        # a match can be set by hand, switched off, and put back to automatic
+        assert c.put(f"/api/devices/{printer['id']}/monitoring-link", json={"key": "3"}).status_code == 200
+        assert c.get(f"/api/devices/{printer['id']}/health").json()["matched"]["name"] == "Access point"
+        assert c.put(f"/api/devices/{printer['id']}/monitoring-link", json={"key": "999"}).status_code == 422
+        c.put(f"/api/devices/{switch['id']}/monitoring-link", json={"key": ""})
+        assert str(switch["id"]) not in c.get("/api/live").json()["health"]
+        c.put(f"/api/devices/{switch['id']}/monitoring-link", json={"key": None})
+        assert str(switch["id"]) in c.get("/api/live").json()["health"]
+
+        # the source going away keeps the last answer and says why
+        fake.stop()
+        monitoring.refresh()
+        state = c.get("/api/monitoring").json()["state"]
+        assert "didn't answer" in state["error"] and state["devices"] == 3
+
+        assert c.delete("/api/monitoring").status_code == 200
+        assert c.get("/api/monitoring").json()["source"] is None and c.get("/api/live").json()["health"] == {}
+    finally:
+        fake.stop()
         c.__exit__(None, None, None)

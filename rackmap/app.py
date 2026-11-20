@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import __version__, auth, catalog, consoles, controllers, db, discovery, inventory, kvms, monitor, pikvm
+from . import __version__, auth, catalog, consoles, controllers, db, discovery, inventory, kvms, monitor, monitoring, pikvm
 
 STATIC = Path(__file__).parent / "static"
 
@@ -28,8 +28,10 @@ async def lifespan(_app: FastAPI):
     catalog.load()
     if os.environ.get("RACKMAP_MONITOR", "1") != "0":
         monitor.start()
+        monitoring.start()
     yield
     monitor.stop()
+    monitoring.stop()
     db.close()
 
 
@@ -206,7 +208,7 @@ def overview(user: dict = Depends(current_user)) -> dict:
     new = sum(1 for h in discovery.list_hosts() if not h["ignored"] and not h["device"])
     return {"user": user["name"], "racks": inventory.list_racks(), "unplaced": inventory.unplaced_devices(), "new_found": new,
             "console_servers": consoles.list_servers(), "console_kinds": consoles.KINDS,
-            "kvms": kvms.list_kvms(), "kvm_kinds": kvms.KINDS}
+            "kvms": kvms.list_kvms(), "kvm_kinds": kvms.KINDS, "monitoring": monitoring.configured()}
 
 
 @app.post("/api/racks")
@@ -632,8 +634,68 @@ def controller_power(device_id: int, body: PowerBody, _user: dict = Depends(curr
 
 @app.get("/api/live")
 def live(_user: dict = Depends(current_user)) -> dict:
-    """Which equipment is answering on the network, by device id."""
-    return {"devices": {str(k): v for k, v in monitor.snapshot().items()}}
+    """Which equipment is answering on the network, by device id; and, with a monitoring source
+    set up, how each matched piece of equipment is doing and how many things need attention."""
+    out = {"devices": {str(k): v for k, v in monitor.snapshot().items()}, "health": {}, "alerts": 0}
+    if monitoring.configured():
+        out["health"] = {str(k): v for k, v in monitoring.health().items()}
+        out["alerts"] = len(monitoring.alerts_view())
+    return out
+
+
+class MonitoringBody(BaseModel):
+    kind: str = Field(default="librenms", max_length=20)
+    url: str = Field(max_length=300)
+    token: str = Field(default="", max_length=400)  # empty when editing keeps the saved one
+
+
+class MonitoringLinkBody(BaseModel):
+    key: str | None = Field(default=None, max_length=64)  # None: match automatically; "": not monitored
+
+
+@app.exception_handler(monitoring.Invalid)
+async def invalid_monitoring(_request: Request, exc: monitoring.Invalid) -> JSONResponse:
+    return JSONResponse(status_code=422, content={"detail": str(exc)})
+
+
+@app.exception_handler(monitoring.SourceError)
+async def monitoring_failed(_request: Request, exc: monitoring.SourceError) -> JSONResponse:
+    return JSONResponse(status_code=502, content={"detail": str(exc)})
+
+
+@app.get("/api/monitoring")
+def monitoring_view(_user: dict = Depends(current_user)) -> dict:
+    return monitoring.overview()
+
+
+@app.put("/api/monitoring")
+def monitoring_save(body: MonitoringBody, _user: dict = Depends(current_user)) -> dict:
+    return {"source": monitoring.save(body.model_dump())}
+
+
+@app.delete("/api/monitoring")
+def monitoring_delete(_user: dict = Depends(current_user)) -> dict:
+    monitoring.remove()
+    return {}
+
+
+@app.get("/api/devices/{device_id}/health")
+def device_health(device_id: int, _user: dict = Depends(current_user)) -> dict:
+    return monitoring.device_health(device_id)
+
+
+@app.get("/api/devices/{device_id}/health/graph")
+def device_health_graph(device_id: int, name: str, period: str = "day", full: bool = False, _user: dict = Depends(current_user)) -> Response:
+    kind, body = monitoring.graph(device_id, name, period, full)
+    # The picture comes from another system: it is only ever shown as an image, and may run nothing if opened directly.
+    return Response(content=body, media_type=kind.split(";")[0], headers={
+        "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; sandbox", "Cache-Control": "private, max-age=120"})
+
+
+@app.put("/api/devices/{device_id}/monitoring-link")
+def device_monitoring_link(device_id: int, body: MonitoringLinkBody, _user: dict = Depends(current_user)) -> dict:
+    monitoring.set_link(device_id, body.key)
+    return {}
 
 
 app.mount("/static", StaticFiles(directory=STATIC), name="static")

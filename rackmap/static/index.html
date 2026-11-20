@@ -14,6 +14,7 @@
       <button type="button" id="nav-racks" aria-current="page">Racks</button>
       <button type="button" id="nav-discovery">Discovery <span class="badge" id="nav-badge" hidden></span></button>
       <button type="button" id="nav-consoles">Consoles</button>
+      <button type="button" id="nav-monitoring">Monitoring <span class="badge alert" id="nav-alerts" hidden></span></button>
     </nav>
     <div class="who">
       <span id="who-name"></span>
@@ -151,6 +152,33 @@
         </section>
       </div>
       <p class="foot">rackmap <span id="version"></span> · maker names from the IEEE address registry</p>
+    </section>
+  </template>
+
+  <template id="t-monitoring">
+    <section class="home monitoring">
+      <div class="disc-grid">
+        <section class="card" id="source-card">
+          <h1>Monitoring source</h1>
+          <p class="hint">rackmap can show health, alerts and graphs from a monitoring system you already run. It only reads from it. LibreNMS is supported today.</p>
+          <div id="source-state"></div>
+          <div class="buttons">
+            <button type="button" class="primary" id="source-edit">Connect a monitoring system</button>
+          </div>
+        </section>
+
+        <section id="found">
+          <div class="found-head">
+            <h1 id="alerts-title">Alerts</h1>
+          </div>
+          <p class="hint" id="alerts-empty"></p>
+          <ul class="hosts" id="alerts-list"></ul>
+          <h2 id="h-unmatched" hidden>Monitored, but not in rackmap</h2>
+          <p class="hint" id="unmatched-hint" hidden>The monitoring system watches these, and nothing here has the same address or name. Add… records one as equipment; it then links itself.</p>
+          <ul class="hosts" id="unmatched-list"></ul>
+        </section>
+      </div>
+      <p class="foot">rackmap <span id="version"></span></p>
     </section>
   </template>
 
@@ -344,6 +372,25 @@
         <span class="spacer"></span>
         <button type="button" class="secondary" data-close>Cancel</button>
         <button type="submit" class="primary" id="controller-save">Connect</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="monitoring-dialog">
+    <form method="dialog" id="monitoring-form" novalidate>
+      <h1 id="monitoring-dialog-title">Connect a monitoring system</h1>
+      <p class="hint">rackmap reads health, alerts and graphs from it and shows them on the equipment recorded here, matched by IP address and then by name. It never changes anything there.</p>
+      <label>Kind<select name="kind" id="monitoring-kind"></select></label>
+      <label>Address<input name="url" maxlength="300" placeholder="https://librenms.example.net" autocomplete="off" inputmode="url" spellcheck="false"></label>
+      <label>API token<input name="token" type="password" maxlength="400" autocomplete="new-password"></label>
+      <p class="hint" id="monitoring-token-note" hidden>Leave the token empty to keep the saved one.</p>
+      <p class="hint">In LibreNMS: your name at the top right, then API, API Settings, Create API access token. The token of a read-only account is enough. rackmap signs in to check before saving, and stores the token encrypted on this rackmap server.</p>
+      <p class="error" id="monitoring-error" role="alert" hidden></p>
+      <div class="buttons">
+        <button type="button" class="danger" id="monitoring-delete" hidden>Disconnect</button>
+        <span class="spacer"></span>
+        <button type="button" class="secondary" data-close>Cancel</button>
+        <button type="submit" class="primary" id="monitoring-save">Connect</button>
       </div>
     </form>
   </dialog>

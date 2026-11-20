@@ -4,7 +4,7 @@ const main = document.getElementById("main");
 const bar = document.getElementById("bar");
 const $ = (id) => document.getElementById(id);
 
-const state = { version: "", view: "racks", racks: [], unplaced: [], rackId: null, face: "front", selectedId: null, newFound: 0, live: {}, discovery: null, showIgnored: false, consoles: [], kinds: {}, kvms: [], kvmKinds: {}, openPort: null, screenPort: null };
+const state = { version: "", view: "racks", racks: [], unplaced: [], rackId: null, face: "front", selectedId: null, newFound: 0, live: {}, discovery: null, showIgnored: false, consoles: [], kinds: {}, kvms: [], kvmKinds: {}, openPort: null, screenPort: null, health: {}, monitoring: false, alertCount: 0, monitoringView: null, allSensors: false, graphPeriod: "day" };
 
 /* ---------- talking to the server ---------- */
 
@@ -137,6 +137,7 @@ async function reload() {
   state.kinds = overview.console_kinds || {};
   state.kvms = overview.kvms || [];
   state.kvmKinds = overview.kvm_kinds || {};
+  state.monitoring = Boolean(overview.monitoring);
   renderNav();
   if (state.view === "racks" && $("rack-tabs")) render();
 }
@@ -148,6 +149,12 @@ function renderNav() {
   if (state.view === "discovery") $("nav-discovery").setAttribute("aria-current", "page");
   $("nav-consoles").toggleAttribute("aria-current", state.view === "consoles");
   if (state.view === "consoles") $("nav-consoles").setAttribute("aria-current", "page");
+  $("nav-monitoring").toggleAttribute("aria-current", state.view === "monitoring");
+  if (state.view === "monitoring") $("nav-monitoring").setAttribute("aria-current", "page");
+  const alertBadge = $("nav-alerts");
+  alertBadge.hidden = !state.alertCount;
+  alertBadge.textContent = state.alertCount;
+  alertBadge.setAttribute("aria-label", `${state.alertCount} needing attention`);
   const badge = $("nav-badge");
   badge.hidden = state.newFound === 0;
   badge.textContent = state.newFound;
@@ -265,8 +272,12 @@ function paintLive() {
   const now = Date.now() / 1000;
   for (const dot of document.querySelectorAll("[data-live]")) {
     const entry = live[dot.dataset.live];
-    dot.hidden = !entry;
-    if (entry) {
+    const health = (state.health || {})[dot.dataset.live];
+    dot.hidden = !entry && !health;
+    if (health) {  // the monitoring source knows more than a ping does
+      dot.className = `dot ${health.level === "ok" ? "up" : health.level === "warning" ? "warn" : "alert"}`;
+      dot.title = health.level === "ok" ? "Healthy, according to the monitoring system" : health.why;
+    } else if (entry) {
       dot.className = entry.up ? "dot up" : "dot down";
       dot.title = entry.up ? "Answering on the network" : "Not answering";
     }
@@ -284,7 +295,11 @@ async function refreshLive() {
   clearTimeout(liveTimer);
   if (state.view !== "racks") return;
   try {
-    state.live = (await api("/api/live")).devices;
+    const live = await api("/api/live");
+    state.live = live.devices;
+    state.health = live.health || {};
+    state.alertCount = live.alerts || 0;
+    renderNav();
     paintLive();
   } catch (err) { /* shown as "not checked"; the next round tries again */ }
   liveTimer = setTimeout(refreshLive, 30000);
@@ -612,6 +627,7 @@ function renderDetail() {
     consoleSection(device),
     kvmSection(device),
     device.has_controller ? h("section", { class: "controller", id: "controller-panel" }, h("h2", { text: "Management controller" }), h("p", { class: "hint", text: "Asking the controller…" })) : "",
+    state.monitoring ? h("section", { class: "controller", id: "health-panel" }, h("h2", { text: "Health" }), h("p", { class: "hint", text: "Asking the monitoring system…" })) : "",
     h("div", { class: "buttons" },
       h("button", { type: "button", class: "secondary", onclick: () => openDeviceDialog(device) }, "Edit"),
       placed ? h("button", { type: "button", class: "secondary", onclick: () => takeOut(device) }, "Take out of rack") : null,
@@ -619,6 +635,7 @@ function renderDetail() {
       h("button", { type: "button", class: "danger", onclick: () => removeDevice(device) }, "Delete")),
     roleLinks(device));
   if (device.has_controller) loadControllerPanel(device);
+  if (state.monitoring) loadHealthPanel(device);
 }
 
 async function takeOut(device) {
@@ -1528,6 +1545,235 @@ for (const button of document.querySelectorAll("#power-dialog [data-power]")) {
 
 /* ---------- start-up ---------- */
 
+/* ---------- monitoring source ---------- */
+
+let healthSeq = 0;
+let monitoringTimer = null;
+const LEVEL_TEXT = { ok: "Healthy", warning: "Warning", alert: "Alert" };
+const levelClass = (level) => (level === "ok" ? "on" : level === "warning" ? "warn" : "alert");
+
+function rate(bps) {
+  if (bps >= 1e9) return `${(bps / 1e9).toFixed(1)} Gb/s`;
+  if (bps >= 1e6) return `${(bps / 1e6).toFixed(1)} Mb/s`;
+  if (bps >= 1e3) return `${Math.round(bps / 1e3)} kb/s`;
+  return `${bps} b/s`;
+}
+
+function upFor(seconds) {
+  if (!seconds) return "";
+  const days = Math.floor(seconds / 86400);
+  if (days >= 2) return `${days} days`;
+  const hours = Math.floor(seconds / 3600);
+  if (hours >= 2) return `${hours} hours`;
+  return `${Math.max(1, Math.round(seconds / 60))} minutes`;
+}
+
+function sensorValue(sensor) {
+  const n = Number(sensor.value);
+  const shown = Number.isInteger(n) ? String(n) : n.toFixed(1);
+  return sensor.unit ? `${shown} ${sensor.unit}` : shown;
+}
+
+function linkChoice(device, data) {
+  const select = h("select", { id: "health-link", "aria-label": "Monitored as" },
+    h("option", { value: "auto" }, "Match by address or name"),
+    h("option", { value: "none" }, "Not monitored"),
+    ...data.choices.map((c) => h("option", { value: `k:${c.key}` }, c.address && c.address !== c.name ? `${c.name} (${c.address})` : c.name)));
+  select.value = data.link === null || data.link === undefined ? "auto" : data.link === "" ? "none" : `k:${data.link}`;
+  select.addEventListener("change", async () => {
+    select.disabled = true;
+    const key = select.value === "auto" ? null : select.value === "none" ? "" : select.value.slice(2);
+    try { await api(`/api/devices/${device.id}/monitoring-link`, { key }, "PUT"); } catch (err) { await failed(err); }
+    refreshLive();
+    loadHealthPanel(device);
+  });
+  return h("label", { class: "inline-choice" }, "Monitored as", select);
+}
+
+function healthRows(device, data) {
+  const rows = [];
+  const m = data.matched;
+  if (data.error) rows.push(h("p", { class: "error", text: data.error }));
+  if (!m) {
+    rows.push(h("p", { class: "hint", text: data.link === "" ? "Monitoring is switched off for this equipment." : "The monitoring system has no device with this address or name. Give this equipment its IP address, or pick the device here." }));
+    rows.push(linkChoice(device, data));
+    return rows;
+  }
+  rows.push(h("p", { class: "power-line" },
+    h("span", { class: `pill ${levelClass(m.level)}`, text: LEVEL_TEXT[m.level] }),
+    m.level === "ok" ? null : h("span", { class: m.level === "alert" ? "down-text" : "warn-text", text: m.why })));
+  const ports = data.ports;
+  rows.push(h("dl", { class: "facts" },
+    fact("Reports as", [m.hardware, m.version].filter(Boolean).join(", ")),
+    fact("Running for", upFor(m.uptime)),
+    fact("Ports", ports && ports.total ? `${ports.up} of ${ports.total} connected` : ""),
+    fact("Traffic now", ports && (ports.in_bps || ports.out_bps) ? `${rate(ports.in_bps)} in, ${rate(ports.out_bps)} out` : ""),
+    fact("Port errors", ports && ports.errors ? h("span", { class: "warn-text", text: `${ports.errors} in the last few minutes` }) : "")));
+  if (data.alerts && data.alerts.length) {
+    rows.push(h("ul", { class: "plain-list" }, data.alerts.map((a) =>
+      h("li", { class: a.level === "alert" ? "down-text" : "warn-text" }, a.name, a.since ? h("span", { class: "muted", text: ` (since ${a.since})` }) : null))));
+  }
+  if (data.sensors && data.sensors.length) {
+    const shown = data.sensors.slice(0, state.allSensors ? 60 : 8);
+    rows.push(h("dl", { class: "facts sensors" }, ...shown.map((s) =>
+      [h("dt", { text: s.label }), h("dd", { class: s.level === "alert" ? "down-text" : s.level === "warning" ? "warn-text" : "" }, sensorValue(s))])));
+    if (data.sensors.length > 8) {
+      rows.push(h("button", { type: "button", class: "link", onclick: () => { state.allSensors = !state.allSensors; loadHealthPanel(device); } },
+        state.allSensors ? "Show fewer readings" : `Show all ${data.sensors.length} readings`));
+    }
+  }
+  if (data.graphs && data.graphs.length) {
+    const period = state.graphPeriod;
+    rows.push(h("div", { class: "buttons" }, ["day", "week"].map((p) =>
+      h("button", { type: "button", class: "link", "aria-pressed": p === period ? "true" : "false", onclick: () => { state.graphPeriod = p; loadHealthPanel(device); } }, p === "day" ? "Last day" : "Last week"))));
+    rows.push(h("div", { class: "graphs" }, data.graphs.map((g) =>
+      h("figure", {}, h("figcaption", { text: g.title }),
+        h("a", { href: `/api/devices/${device.id}/health/graph?name=${encodeURIComponent(g.name)}&period=${period}&full=true`, target: "_blank", rel: "noopener", title: "Open the full graph" },
+          h("img", { loading: "lazy", alt: `${g.title}, last ${period}`, src: `/api/devices/${device.id}/health/graph?name=${encodeURIComponent(g.name)}&period=${period}` }))))));
+  }
+  if (data.events && data.events.length) {
+    rows.push(h("details", {}, h("summary", { text: "Recent log lines" }),
+      h("ul", { class: "plain-list log" }, data.events.map((e) => h("li", {}, h("span", { class: "mono muted", text: e.time }), " ", e.text)))));
+  }
+  rows.push(linkChoice(device, data));
+  return rows;
+}
+
+async function loadHealthPanel(device) {
+  const seq = ++healthSeq;
+  const current = () => seq === healthSeq && $("health-panel") && state.selectedId === device.id;
+  let data;
+  try {
+    data = await api(`/api/devices/${device.id}/health`);
+  } catch (err) {
+    if (current()) $("health-panel").replaceChildren(h("h2", { text: "Health" }), h("p", { class: "error", text: err.message }));
+    return;
+  }
+  if (current()) $("health-panel").replaceChildren(h("h2", { text: "Health" }), ...healthRows(device, data));
+}
+
+function showInRack(deviceId) {
+  state.view = "racks";
+  state.selectedId = deviceId;
+  const device = findDevice(deviceId);
+  if (device && device.rack_id) state.rackId = device.rack_id;
+  showView();
+}
+
+function renderMonitoring() {
+  const view = state.monitoringView;
+  if (!view || !$("source-state")) return;
+  const source = view.source;
+  const box = $("source-state");
+  if (!source) {
+    box.replaceChildren(h("p", { class: "hint", text: "Not connected yet." }));
+  } else {
+    const read = view.state.fetched ? ago(Date.now() / 1000 - view.state.fetched) : "not yet";
+    box.replaceChildren(
+      h("dl", { class: "facts" },
+        fact("System", source.says || view.kinds[source.kind]),
+        fact("Address", h("span", { class: "mono", text: source.url })),
+        fact("Devices", `${view.state.devices}, ${view.state.matched} matched to equipment here`),
+        fact("Last read", read),
+        fact("Certificate", source.pinned ? "Remembered when it was connected (it can't be verified the usual way)" : "")),
+      view.state.error ? h("p", { class: "error", text: view.state.error }) : "");
+  }
+  $("source-edit").textContent = source ? "Edit" : "Connect a monitoring system";
+  $("source-edit").className = source ? "secondary" : "primary";
+  const alerts = view.alerts;
+  $("alerts-title").textContent = !source ? "Alerts" : alerts.length ? `${alerts.length} ${alerts.length === 1 ? "thing needs" : "things need"} attention` : "Nothing is wrong right now";
+  $("alerts-empty").textContent = !source ? "Alerts from the monitoring system appear here once one is connected." : alerts.length ? "" : "No open alerts, and every monitored device is answering.";
+  $("alerts-empty").hidden = Boolean(source && alerts.length);
+  $("alerts-list").replaceChildren(...alerts.map((a) => {
+    const device = a.device_id ? findDevice(a.device_id) : null;
+    return h("li", { class: "host card" },
+      h("div", { class: "host-main" },
+        h("div", { class: "host-title" },
+          h("span", { class: `pill ${levelClass(a.level)}`, text: LEVEL_TEXT[a.level] }),
+          h("strong", { text: device ? device.name : a.source_name || "Unknown device" })),
+        h("p", { class: "host-facts", text: a.name }),
+        a.since ? h("p", { class: "hint", text: `Since ${a.since}` }) : null,
+        device ? null : h("p", { class: "hint", text: "Not recorded in rackmap." })),
+      h("div", { class: "host-actions" }, device ? h("button", { type: "button", class: "secondary", onclick: () => showInRack(device.id) }, "Show in rack view") : null));
+  }));
+  const unmatched = view.unmatched;
+  $("h-unmatched").hidden = unmatched.length === 0;
+  $("unmatched-hint").hidden = unmatched.length === 0;
+  $("unmatched-list").replaceChildren(...unmatched.map((d) =>
+    h("li", { class: "host card" },
+      h("div", { class: "host-main" },
+        h("div", { class: "host-title" }, h("strong", { text: d.name }), d.address && d.address !== d.name ? h("span", { class: "mono", text: d.address }) : null),
+        d.up ? null : h("p", { class: "down-text", text: "Not answering the monitoring system" })),
+      h("div", { class: "host-actions" },
+        h("button", { type: "button", class: "primary", onclick: () => openDeviceDialog(null, { name: d.name, ip: /^[0-9.]+$/.test(d.address) ? d.address : "", mac: "", admin_url: "", kind: null, searchText: "", rack_id: state.rackId, face: "front" }) }, "Add…")))));
+}
+
+async function loadMonitoring() {
+  clearTimeout(monitoringTimer);
+  state.monitoringView = await api("/api/monitoring");
+  state.monitoring = Boolean(state.monitoringView.source);
+  state.alertCount = state.monitoringView.alerts.length;
+  renderNav();
+  if (state.view !== "monitoring") return;
+  renderMonitoring();
+  monitoringTimer = setTimeout(() => { loadMonitoring().catch(() => {}); }, 60000);
+}
+
+function openMonitoringDialog() {
+  const view = state.monitoringView || { kinds: { librenms: "LibreNMS" }, source: null };
+  const form = $("monitoring-form");
+  form.reset();
+  $("monitoring-kind").replaceChildren(...Object.entries(view.kinds).map(([value, text]) => h("option", { value }, text)));
+  if (view.source) {
+    form.elements.kind.value = view.source.kind;
+    form.elements.url.value = view.source.url;
+  }
+  $("monitoring-dialog-title").textContent = view.source ? "Monitoring system" : "Connect a monitoring system";
+  $("monitoring-save").textContent = view.source ? "Save" : "Connect";
+  $("monitoring-delete").hidden = !view.source;
+  $("monitoring-token-note").hidden = !view.source;
+  setError("monitoring-error", "");
+  $("monitoring-dialog").showModal();
+  form.elements.url.focus();
+}
+
+$("monitoring-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = event.target;
+  const body = { kind: form.elements.kind.value, url: form.elements.url.value.trim(), token: form.elements.token.value.trim() };
+  if (!body.url) return setError("monitoring-error", "Enter the address you open the monitoring system at.");
+  setError("monitoring-error", "");
+  $("monitoring-save").disabled = true;
+  try {
+    await api("/api/monitoring", body, "PUT");
+    $("monitoring-dialog").close("");
+    await reload();
+    await loadMonitoring();
+  } catch (err) {
+    if (err.status === 401) { $("monitoring-dialog").close(""); return start(); }
+    setError("monitoring-error", err.message);
+  } finally {
+    $("monitoring-save").disabled = false;
+  }
+});
+
+$("monitoring-delete").addEventListener("click", async () => {
+  $("monitoring-dialog").close("");
+  if (!(await confirmDialog("Disconnect the monitoring system?", "rackmap forgets its address and token and stops showing health and alerts. Nothing changes in the monitoring system itself.", "Disconnect"))) return;
+  try {
+    await api("/api/monitoring", undefined, "DELETE");
+    state.health = {};
+    await reload();
+    await loadMonitoring();
+  } catch (err) { await failed(err); }
+});
+
+function monitoringScreen() {
+  show("t-monitoring");
+  $("version").textContent = state.version;
+  $("source-edit").addEventListener("click", openMonitoringDialog);
+}
+
 function racksScreen() {
   show("t-home");
   $("version").textContent = state.version;
@@ -1543,6 +1789,7 @@ async function showView() {
   bar.hidden = false;
   clearTimeout(scanTimer);
   clearTimeout(liveTimer);
+  clearTimeout(monitoringTimer);
   if (state.view !== "consoles" || !$("term-card")) { const keep = state.view === "consoles" ? state.openPort : null; closeTerminal(); state.openPort = keep; }
   if (state.view !== "screen") closeScreen();
   renderNav();
@@ -1558,6 +1805,9 @@ async function showView() {
       consolesScreen();
       await loadConsoles();
       if (wanted !== null) { openTerminal(wanted); renderConsoles(); }
+    } else if (state.view === "monitoring") {
+      monitoringScreen();
+      await loadMonitoring();
     } else {
       racksScreen();
       render();
@@ -1572,6 +1822,7 @@ async function showView() {
 $("nav-racks").addEventListener("click", () => { state.view = "racks"; showView(); });
 $("nav-discovery").addEventListener("click", () => { state.view = "discovery"; showView(); });
 $("nav-consoles").addEventListener("click", () => { if (state.view !== "consoles") { state.view = "consoles"; showView(); } });
+$("nav-monitoring").addEventListener("click", () => { state.view = "monitoring"; showView(); });
 
 async function start() {
   let status;
